@@ -1,0 +1,15 @@
+credentials.json
+cookies.txt
+ytmusic_headers.json
+*.log
+bot.log
+rclone_out.txt
+rclone_pty.txt
+venv/
+__pycache__/
+*.pyc
+
+downloads/
+tdl_data.json
+tweet_info.json
+*.commits.txt
