@@ -926,6 +926,21 @@ async def tdl(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(_tdl_render(items), parse_mode='HTML')
 
+def _fetch_exact_ytmusic_url(query: str) -> str:
+    """Extract yt music links"""
+    try:
+        from ytmusicapi import YTMusic
+        ytm = YTMusic()
+        search_results = ytm.search(query, filter="songs")
+        if search_results and 'videoId' in search_results[0]:
+            return f"https://music.youtube.com/watch?v={search_results[0]['videoId']}"
+        search_results = ytm.search(query, filter="videos")
+        if search_results and 'videoId' in search_results[0]:
+            return f"https://music.youtube.com/watch?v={search_results[0]['videoId']}"
+    except Exception as e:
+        print(f"Error searching YTMusic for exact link: {e}")
+    return None
+
 async def nowplaying(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.username != OWNER_USERNAME:
         await update.message.reply_text("This command is only for @grepfox.")
@@ -984,6 +999,17 @@ async def nowplaying(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = f"{artist} {title}".strip()
     import urllib.parse
     ytm_url = f"https://music.youtube.com/search?q={urllib.parse.quote(query)}"
+
+    # Attempt to resolve the exact song link asynchronously
+    try:
+        exact_url = await loop.run_in_executor(
+            None, _fetch_exact_ytmusic_url, query
+        )
+        if exact_url:
+            ytm_url = exact_url
+    except Exception as e:
+        print(f"Executor error fetching exact link: {e}")
+
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Listen on YT Music", url=ytm_url)]])
 
     try:
