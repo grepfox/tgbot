@@ -102,7 +102,8 @@ async def post_init(application: Application):
         BotCommand("source_tracker", "Track LineageOS/YAAP commits"),
         BotCommand("mirror", "Mirror link/file to Google Drive"),
         BotCommand("tdl", "Manage your to-do list"),
-        BotCommand("nowplaying", "Show currently playing on YouTube Music")
+        BotCommand("nowplaying", "Show currently playing on YouTube Music"),
+        BotCommand("neofetch", "Shows server specification in which bot is hosted on")
     ]
     await application.bot.set_my_commands(commands)
 
@@ -119,6 +120,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/tdl del <n> - Delete item number n\n"
         "/tdl clear - Clear your entire list\n"
         "/nowplaying - Show what's playing on YT Music (@grepfox only)\n"
+        "/neofetch - Shows server specification in which bot is hosted on\n"
         "\nAuto-download: Just send a YouTube, X/Twitter or Instagram link and I'll fetch the posts!"
     )
     await update.message.reply_text(help_text)
@@ -1022,6 +1024,85 @@ async def nowplaying(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         await update.message.reply_text(caption, parse_mode='HTML', reply_markup=keyboard)
 
+def clean_neofetch_ansi(raw_bytes: bytes) -> str:
+    text = raw_bytes.decode('utf-8', errors='ignore')
+    grid = {}
+    x, y = 0, 0
+    max_x, max_y = 0, 0
+    ansi_re = re.compile(r'\x1b\[([?0-9;]*)([a-zA-Z])')
+    last_idx = 0
+    for match in ansi_re.finditer(text):
+        normal_text = text[last_idx:match.start()]
+        for char in normal_text:
+            if char == '\n':
+                y += 1
+                x = 0
+            elif char == '\r':
+                x = 0
+            else:
+                grid[(x, y)] = char
+                x += 1
+                max_x = max(max_x, x)
+                max_y = max(max_y, y)
+        args_str, cmd = match.groups()
+        last_idx = match.end()
+        args = []
+        if args_str:
+            clean_args = args_str.lstrip('?')
+            if clean_args:
+                args = [int(v) for v in clean_args.split(';') if v.isdigit()]
+        if cmd == 'A':
+            val = args[0] if args else 1
+            y = max(0, y - val)
+        elif cmd == 'B':
+            val = args[0] if args else 1
+            y += val
+            max_y = max(max_y, y)
+        elif cmd == 'C':
+            val = args[0] if args else 1
+            x += val
+            max_x = max(max_x, x)
+        elif cmd == 'D':
+            val = args[0] if args else 1
+            x = max(0, x - val)
+    normal_text = text[last_idx:]
+    for char in normal_text:
+        if char == '\n':
+            y += 1
+            x = 0
+        elif char == '\r':
+            x = 0
+        else:
+            grid[(x, y)] = char
+            x += 1
+            max_x = max(max_x, x)
+            max_y = max(max_y, y)
+    lines = []
+    for cur_y in range(max_y + 1):
+        line_chars = []
+        for cur_x in range(max_x + 1):
+            line_chars.append(grid.get((cur_x, cur_y), ' '))
+        lines.append(''.join(line_chars).rstrip())
+    while lines and not lines[-1]:
+        lines.pop()
+    return '\n'.join(lines)
+
+async def neofetch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            'neofetch', '--disable', 'shell', 'resolution', 'term',
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT
+        )
+        stdout, _ = await proc.communicate()
+        output = clean_neofetch_ansi(stdout)
+        if not output.strip():
+            await update.message.reply_text("Error: neofetch returned empty output.")
+            return
+        await update.message.reply_text(f"<pre>{html.escape(output)}</pre>", parse_mode='HTML')
+    except Exception as e:
+        await update.message.reply_text(f"Error running neofetch: {e}")
+
 _SOCIAL_PATTERNS = re.compile(
     r'https?://(?:www\.)?'
     r'(?:'
@@ -1554,6 +1635,7 @@ def main():
     application.add_handler(CommandHandler("mirror", mirror))
     application.add_handler(CommandHandler("tdl", tdl))
     application.add_handler(CommandHandler("nowplaying", nowplaying))
+    application.add_handler(CommandHandler("neofetch", neofetch_cmd))
 
     application.add_handler(
         MessageHandler(
