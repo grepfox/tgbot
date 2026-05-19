@@ -1090,7 +1090,7 @@ def clean_neofetch_ansi(raw_bytes: bytes) -> str:
 async def neofetch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         proc = await asyncio.create_subprocess_exec(
-            'neofetch', '--disable', 'shell', 'resolution', 'term',
+            'neofetch',
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT
         )
