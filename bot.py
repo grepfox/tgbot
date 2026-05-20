@@ -61,9 +61,9 @@ def _tdl_render(items):
     body = "\n".join(lines)
     return f"<b>Your To-Do List</b>\n<pre>{body}</pre>"
 
-async def safe_edit_message(status_msg, new_text, reply_markup=None):
+async def safe_edit_message(status_msg, new_text, reply_markup=None, parse_mode="Markdown"):
     try:
-        await status_msg.edit_text(new_text, reply_markup=reply_markup, parse_mode="Markdown")
+        await status_msg.edit_text(new_text, reply_markup=reply_markup, parse_mode=parse_mode)
     except Exception as e:
         if "Message is not modified" not in str(e):
             print(f"Edit message error: {e}")
@@ -80,7 +80,11 @@ async def mirror_worker(application: Application):
                 state = tasks_state.get(task_id, {})
                 status_msg = state.get('status_msg')
                 if status_msg:
-                    await safe_edit_message(status_msg, f"❌ Error: {e}")
+                    await safe_edit_message(
+                        status_msg, 
+                        f"❌ Error: <code>{html.escape(str(e))}</code>",
+                        parse_mode="HTML"
+                    )
             finally:
                 active_count -= 1
                 if task_id in tasks_state:
@@ -379,6 +383,9 @@ async def run_and_parse_rclone(cmd_args, task_id):
         '--retries', '5'
     ]
 
+    with open('mirror_debug.log', 'a') as f:
+        f.write(f"[DEBUG] run_and_parse_rclone started. cmd={cmd_args}\n")
+
     full_cmd = cmd_args + gdrive_opts + ['--use-json-log', '--log-level', 'INFO']
     process = await asyncio.create_subprocess_exec(
         *full_cmd,
@@ -397,6 +404,8 @@ async def run_and_parse_rclone(cmd_args, task_id):
 
     while True:
         if state.get('cancelled'):
+            with open('mirror_debug.log', 'a') as f:
+                f.write("[DEBUG] rclone transfer cancelled.\n")
             break
 
         line = await process.stdout.readline()
@@ -411,6 +420,11 @@ async def run_and_parse_rclone(cmd_args, task_id):
             entry = json.loads(line_str)
         except json.JSONDecodeError:
             continue
+
+        # Log rclone output to help diagnostics
+        if entry.get('stats'):
+            with open('mirror_debug.log', 'a') as f:
+                f.write(f"[DEBUG] rclone stats: {line_str}\n")
 
         if entry.get('level') != 'info':
             continue
@@ -437,12 +451,12 @@ async def run_and_parse_rclone(cmd_args, task_id):
             bar = "⬢" * filled + "○" * (10 - filled)
 
             lines = [
-                f"*{file_label}:* `{filename}`",
+                f"<b>{html.escape(file_label)}:</b> <code>{html.escape(filename)}</code>",
                 "",
-                f"Task By {user_name} ( #ID{user_id} )",
+                f"Task By {html.escape(user_name)} ( #ID{user_id} )",
                 f"┣ [{bar}] {pct}%",
                 f"┣ Processed → {fmt_bytes(bytes_done)} of {fmt_bytes(total_bytes)}",
-                f"┣ Status → {action_text}",
+                f"┣ Status → {html.escape(action_text)}",
             ]
 
             if upload_speed > 0:
@@ -455,11 +469,13 @@ async def run_and_parse_rclone(cmd_args, task_id):
 
             msg_text = "\n".join(lines)
             keyboard = [[InlineKeyboardButton("🚫 Cancel", callback_data=f"cancel_{task_id}")]]
-            await safe_edit_message(status_msg, msg_text, reply_markup=InlineKeyboardMarkup(keyboard))
+            await safe_edit_message(status_msg, msg_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
         except Exception:
             pass
 
     await process.wait()
+    with open('mirror_debug.log', 'a') as f:
+        f.write(f"[DEBUG] rclone finished with code {process.returncode}\n")
     return process.returncode
 
 async def zip_path(src_path, zip_name, status_msg):
@@ -506,18 +522,18 @@ async def generate_link_and_finish(status_msg, filename):
                 InlineKeyboardButton("⬇️ Download File", url=dl_url),
             ]
         ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
         await safe_edit_message(
             status_msg,
-            f"✅ Mirror Complete!\n\nFile: `{filename}`",
-            reply_markup=reply_markup
+            f"✅ Mirror Complete!\n\nFile: <code>{html.escape(filename)}</code>",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="HTML"
         )
     else:
         if rclone_url:
             keyboard = [[InlineKeyboardButton("🔗 Open Link", url=rclone_url)]]
-            await safe_edit_message(status_msg, f"✅ Mirror Complete!\n\nFile: `{filename}`", reply_markup=InlineKeyboardMarkup(keyboard))
+            await safe_edit_message(status_msg, f"✅ Mirror Complete!\n\nFile: <code>{html.escape(filename)}</code>", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
         else:
-            await safe_edit_message(status_msg, f"✅ Mirror Complete!\n\nFile: `{filename}`\n\n_Note: Could not generate public link._")
+            await safe_edit_message(status_msg, f"✅ Mirror Complete!\n\nFile: <code>{html.escape(filename)}</code>\n\n<i>Note: Could not generate public link.</i>", parse_mode="HTML")
 
 async def gdrive_copyid_to_temp(file_id, task_id):
     """
@@ -597,15 +613,15 @@ async def process_magnet(task_id):
                 bar = '⬢' * (pct // 10) + '○' * (10 - pct // 10)
                 fname = filename or 'Resolving...'
                 msg_text = '\n'.join([
-                    f"*Torrent:* `{fname}`", '',
-                    f"Task By {state['user_name']} ( #ID{state['user_id']} )",
+                    f"<b>Torrent:</b> <code>{html.escape(fname)}</code>", '',
+                    f"Task By {html.escape(state['user_name'])} ( #ID{state['user_id']} )",
                     f"┣ [{bar}] {pct}%",
                     f"┣ Processed → {done_s} of {total_s}",
                     f"┣ Status → Downloading",
                     f"┣ Speed → {(spd_s or 'N/A') + '/s'}",
                     f"┗ ETA → {eta_s or 'N/A'}",
                 ])
-                await safe_edit_message(status_msg, msg_text, reply_markup=InlineKeyboardMarkup(keyboard))
+                await safe_edit_message(status_msg, msg_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
 
     await process.wait()
 
@@ -690,8 +706,8 @@ async def run_aria2c_download(url, dl_dir, filename, task_id):
                 pct = int(pct_s)
                 bar = '⯂' * (pct // 10) + '○' * (10 - pct // 10)
                 msg_text = '\n'.join([
-                    f"*{state.get('file_label','Filename')}:* `{filename}`", '',
-                    f"Task By {state['user_name']} ( #ID{state['user_id']} )",
+                    f"<b>{html.escape(state.get('file_label','Filename'))}:</b> <code>{html.escape(filename)}</code>", '',
+                    f"Task By {html.escape(state['user_name'])} ( #ID{state['user_id']} )",
                     f"┊ [{bar}] {pct}%",
                     f"┊ Processed → {done_s} of {total_s}",
                     f"┊ Status → Downloading",
@@ -699,7 +715,8 @@ async def run_aria2c_download(url, dl_dir, filename, task_id):
                     f"┗ ETA → {eta_s or 'N/A'}",
                 ])
                 await safe_edit_message(status_msg, msg_text,
-                                        reply_markup=InlineKeyboardMarkup(keyboard))
+                                        reply_markup=InlineKeyboardMarkup(keyboard),
+                                        parse_mode="HTML")
 
     await process.wait()
     return process.returncode
@@ -810,7 +827,18 @@ async def process_mirror(task_id, bot):
             shutil.rmtree(dl_dir, ignore_errors=True)
             return
 
+        with open('mirror_debug.log', 'a') as f:
+            f.write(f"\n--- NEW TG MIRROR TASK {task_id} ---\n[DEBUG] filename={filename}, file_size={state.get('file_size')}\n")
+
         try:
+            with open('mirror_debug.log', 'a') as f:
+                f.write(f"[DEBUG] Calling bot.get_file(tg_file_id={tg_file_id})...\n")
+            
+            await safe_edit_message(
+                status_msg, 
+                "⏳ Status: Fetching file details from Telegram (large files may take a minute to prepare)..."
+            )
+
             tg_file = await bot.get_file(
                 tg_file_id,
                 read_timeout=3600,
@@ -819,26 +847,154 @@ async def process_mirror(task_id, bot):
             )
 
             file_path = tg_file.file_path or ''
-            CONTAINER_BASE = '/var/lib/telegram-bot-api/'
+            with open('mirror_debug.log', 'a') as f:
+                f.write(f"[DEBUG] bot.get_file finished. file_path={file_path}\n")
+
+            is_local = False
+            container_file_path = ""
             if file_path.startswith('/'):
-                rel = file_path[len(CONTAINER_BASE):] if file_path.startswith(CONTAINER_BASE) else file_path.lstrip('/')
-                download_url = f"http://localhost:8081/file/bot{bot.token}/{rel}"
+                is_local = True
+                container_file_path = file_path
+            elif '/var/lib/telegram-bot-api/' in file_path:
+                is_local = True
+                idx = file_path.find('/var/lib/telegram-bot-api/')
+                container_file_path = file_path[idx:]
+
+            if is_local:
+                # Local Bot API Server. HTTP downloads return 501 Not Implemented in local mode,
+                # so we copy directly from the container to the host using `docker cp`.
+                with open('mirror_debug.log', 'a') as f:
+                    f.write(f"[DEBUG] Local Bot API file detected at {container_file_path}. Using docker cp.\n")
+
+                cp_proc = await asyncio.create_subprocess_exec(
+                    'docker', 'cp', f"telegram-bot-api:{container_file_path}", local_path,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+
+                total_bytes = state.get('file_size', 0)
+                dl_start = time.time()
+                last_progress_update = time.time()
+                keyboard = [[InlineKeyboardButton("🚫 Cancel", callback_data=f"cancel_{task_id}")]]
+
+                while cp_proc.returncode is None:
+                    if state.get('cancelled'):
+                        try:
+                            cp_proc.terminate()
+                        except Exception:
+                            pass
+                        break
+
+                    bytes_done = 0
+                    if os.path.exists(local_path):
+                        bytes_done = os.path.getsize(local_path)
+
+                    now = time.time()
+                    if now - last_progress_update >= 4:
+                        elapsed = now - dl_start or 1
+                        speed = bytes_done / elapsed
+                        pct = int(bytes_done / total_bytes * 100) if total_bytes else 0
+                        filled = pct // 10
+                        bar = "⬢" * filled + "○" * (10 - filled)
+                        eta_secs = int((total_bytes - bytes_done) / speed) if speed and total_bytes else 0
+                        progress_lines = [
+                            f"<b>Filename:</b> <code>{html.escape(filename)}</code>",
+                            "",
+                            f"Task By {html.escape(state['user_name'])} ( #ID{state['user_id']} )",
+                            f"┣ [{bar}] {pct}%",
+                            f"┣ Processed → {fmt_bytes(bytes_done)}" + (f" of {fmt_bytes(total_bytes)}" if total_bytes else ""),
+                            f"┣ Status → Copying from local Bot API",
+                            f"┣ Speed → {fmt_speed(speed)}",
+                            f"┗ ETA → {fmt_eta(eta_secs) if eta_secs else 'N/A'}",
+                        ]
+                        await safe_edit_message(status_msg, "\n".join(progress_lines),
+                                                reply_markup=InlineKeyboardMarkup(keyboard),
+                                                parse_mode="HTML")
+                        last_progress_update = now
+
+                    await asyncio.sleep(1)
+                    if cp_proc.returncode is None:
+                        try:
+                            await asyncio.wait_for(cp_proc.wait(), timeout=0.1)
+                        except asyncio.TimeoutError:
+                            pass
+
+                stdout, stderr = await cp_proc.communicate()
+                if cp_proc.returncode != 0:
+                    err_msg = stderr.decode('utf-8', errors='ignore').strip()
+                    raise Exception(f"docker cp failed with code {cp_proc.returncode}: {err_msg}")
+
+                with open('mirror_debug.log', 'a') as f:
+                    f.write(f"[DEBUG] docker cp copy finished. Size: {os.path.getsize(local_path)} bytes.\n")
+
             else:
+                # Public Bot API Server. Download via standard HTTP GET.
                 download_url = f"https://api.telegram.org/file/bot{bot.token}/{file_path}"
+                with open('mirror_debug.log', 'a') as f:
+                    f.write(f"[DEBUG] Public Bot API file detected. download_url={download_url}\n")
 
-            await safe_edit_message(status_msg, f"⏳ Status: Downloading `{filename}`...")
+                import httpx
+                total_bytes = state.get('file_size', 0)
+                bytes_done = 0
+                dl_start = time.time()
+                last_progress_update = time.time()
+                keyboard = [[InlineKeyboardButton("🚫 Cancel", callback_data=f"cancel_{task_id}")]]
 
-            import httpx
-            async with httpx.AsyncClient(timeout=3600) as client:
-                async with client.stream('GET', download_url) as resp:
-                    resp.raise_for_status()
-                    with open(local_path, 'wb') as f:
-                        async for chunk in resp.aiter_bytes(1024 * 1024):
-                            f.write(chunk)
+                async with httpx.AsyncClient(timeout=3600) as client:
+                    with open('mirror_debug.log', 'a') as f:
+                        f.write(f"[DEBUG] Initiating stream GET request to {download_url}...\n")
+                    async with client.stream('GET', download_url) as resp:
+                        with open('mirror_debug.log', 'a') as f:
+                            f.write(f"[DEBUG] stream GET response received. status_code={resp.status_code}, headers={dict(resp.headers)}\n")
+                        resp.raise_for_status()
+                        content_length = int(resp.headers.get('content-length', 0))
+                        if content_length and not total_bytes:
+                            total_bytes = content_length
+                        with open(local_path, 'wb') as f_out:
+                            async for chunk in resp.aiter_bytes(1024 * 1024):
+                                if state.get('cancelled'):
+                                    with open('mirror_debug.log', 'a') as f:
+                                        f.write(f"[DEBUG] Task was cancelled mid-download.\n")
+                                    break
+                                f_out.write(chunk)
+                                bytes_done += len(chunk)
+                                now = time.time()
+                                if now - last_progress_update >= 4:
+                                    elapsed = now - dl_start or 1
+                                    speed = bytes_done / elapsed
+                                    pct = int(bytes_done / total_bytes * 100) if total_bytes else 0
+                                    filled = pct // 10
+                                    bar = "⬢" * filled + "○" * (10 - filled)
+                                    eta_secs = int((total_bytes - bytes_done) / speed) if speed and total_bytes else 0
+                                    progress_lines = [
+                                        f"<b>Filename:</b> <code>{html.escape(filename)}</code>",
+                                        "",
+                                        f"Task By {html.escape(state['user_name'])} ( #ID{state['user_id']} )",
+                                        f"┣ [{bar}] {pct}%",
+                                        f"┣ Processed → {fmt_bytes(bytes_done)}" + (f" of {fmt_bytes(total_bytes)}" if total_bytes else ""),
+                                        f"┣ Status → Downloading from Telegram",
+                                        f"┣ Speed → {fmt_speed(speed)}",
+                                        f"┗ ETA → {fmt_eta(eta_secs) if eta_secs else 'N/A'}",
+                                    ]
+                                    await safe_edit_message(status_msg, "\n".join(progress_lines),
+                                                            reply_markup=InlineKeyboardMarkup(keyboard),
+                                                            parse_mode="HTML")
+                                    last_progress_update = now
+
+                with open('mirror_debug.log', 'a') as f:
+                    f.write(f"[DEBUG] HTTP Download completed. bytes_done={bytes_done}\n")
 
         except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            with open('mirror_debug.log', 'a') as f:
+                f.write(f"[DEBUG] Exception occurred in download phase: {e}\n{tb}\n")
             shutil.rmtree(dl_dir, ignore_errors=True)
-            await safe_edit_message(status_msg, f"❌ Error: Telegram file transfer failed: {str(e)}")
+            await safe_edit_message(
+                status_msg, 
+                f"❌ Error: Telegram file transfer failed: <code>{html.escape(str(e))}</code>",
+                parse_mode="HTML"
+            )
             return
 
         if state.get('cancelled'):
