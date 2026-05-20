@@ -75,7 +75,7 @@ async def mirror_worker(application: Application):
         if task_id in tasks_state and not tasks_state[task_id].get('cancelled'):
             active_count += 1
             try:
-                await process_mirror(task_id)
+                await process_mirror(task_id, application.bot)
             except Exception as e:
                 state = tasks_state.get(task_id, {})
                 status_msg = state.get('status_msg')
@@ -255,16 +255,41 @@ def extract_gdrive_info(url):
 
 async def mirror(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args if context.args else []
-    if not args:
-        await update.message.reply_text("Usage: /mirror <URL> [-z]")
-        return
 
-    do_zip = '-z' in args
-    url_args = [a for a in args if a != '-z']
-    if not url_args:
-        await update.message.reply_text("Usage: /mirror <URL> [-z]")
-        return
-    url = url_args[0]
+    target_msg = update.message.reply_to_message or update.message
+    file_obj = None
+    filename = "Unknown"
+    file_size = 0
+
+    if target_msg.document:
+        file_obj = target_msg.document
+        filename = target_msg.document.file_name
+        file_size = target_msg.document.file_size
+    elif target_msg.video:
+        file_obj = target_msg.video
+        filename = target_msg.video.file_name or f"video_{target_msg.video.file_id[:6]}.mp4"
+        file_size = target_msg.video.file_size
+    elif target_msg.audio:
+        file_obj = target_msg.audio
+        filename = target_msg.audio.file_name or f"audio_{target_msg.audio.file_id[:6]}.mp3"
+        file_size = target_msg.audio.file_size
+    elif target_msg.photo:
+        file_obj = target_msg.photo[-1]
+        filename = f"photo_{target_msg.photo[-1].file_id[:6]}.jpg"
+        file_size = target_msg.photo[-1].file_size
+
+    do_zip = '-z' in args or (update.message.caption and '-z' in update.message.caption)
+
+    url = None
+    if not file_obj:
+        url_args = [a for a in args if a != '-z']
+        if not url_args:
+            await update.message.reply_text(
+                "Usage: `/mirror <URL> [-z]`\nOr reply to a file/document/video/photo with `/mirror [-z]`",
+                parse_mode="Markdown"
+            )
+            return
+        url = url_args[0]
 
     task_id = str(uuid.uuid4())[:8]
     queue_pos = mirror_queue.qsize() + 1
@@ -285,6 +310,9 @@ async def mirror(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     tasks_state[task_id] = {
         'url': url,
+        'tg_file_id': file_obj.file_id if file_obj else None,
+        'filename': filename,
+        'file_size': file_size,
         'do_zip': do_zip,
         'user_name': update.effective_user.first_name,
         'user_id': update.effective_user.id,
@@ -341,7 +369,17 @@ def fmt_eta(seconds):
 async def run_and_parse_rclone(cmd_args, task_id):
     state = tasks_state[task_id]
 
-    full_cmd = cmd_args + ['--use-json-log', '--log-level', 'INFO']
+    gdrive_opts = [
+        '--drive-chunk-size', '64M',
+        '--tpslimit', '10',
+        '--tpslimit-burst', '10',
+        '--drive-pacer-min-sleep', '100ms',
+        '--drive-acknowledge-abuse',
+        '--low-level-retries', '10',
+        '--retries', '5'
+    ]
+
+    full_cmd = cmd_args + gdrive_opts + ['--use-json-log', '--log-level', 'INFO']
     process = await asyncio.create_subprocess_exec(
         *full_cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -382,7 +420,7 @@ async def run_and_parse_rclone(cmd_args, task_id):
             continue
 
         now = time.time()
-        if now - last_update < 1:
+        if now - last_update < 4:
             continue
         last_update = now
 
@@ -552,7 +590,7 @@ async def process_magnet(task_id):
         m = re.search(r'\[#\w+ ([\d.]+\w+)/([\d.]+\w+)\((\d+)%\)(?:[^\]]*DL:([\d.]+\w+))?(?:[^\]]*ETA:(\S+))?\]', line_str)
         if m:
             now = time.time()
-            if now - last_update >= 1:
+            if now - last_update >= 4:
                 last_update = now
                 done_s, total_s, pct_s, spd_s, eta_s = m.groups()
                 pct = int(pct_s)
@@ -646,7 +684,7 @@ async def run_aria2c_download(url, dl_dir, filename, task_id):
         )
         if m:
             now = time.time()
-            if now - last_update >= 1:
+            if now - last_update >= 4:
                 last_update = now
                 done_s, total_s, pct_s, spd_s, eta_s = m.groups()
                 pct = int(pct_s)
@@ -751,11 +789,89 @@ async def _copy_folder_then_zip_upload(task_id, file_id):
     else:
         await safe_edit_message(status_msg, "❌ Error: Failed to upload zipped folder to Drive.")
 
-async def process_mirror(task_id):
+async def process_mirror(task_id, bot):
     state = tasks_state[task_id]
-    url = state['url']
     status_msg = state['status_msg']
     do_zip = state.get('do_zip', False)
+
+    tg_file_id = state.get('tg_file_id')
+    if tg_file_id:
+        filename = state['filename']
+        state['action_text'] = 'Downloading'
+        state['file_label'] = 'Filename'
+
+        await safe_edit_message(status_msg, f"⏳ Status: Fetching file details from Telegram...")
+
+        dl_dir = os.path.join('downloads', task_id)
+        os.makedirs(dl_dir, exist_ok=True)
+        local_path = os.path.join(dl_dir, filename)
+
+        if state.get('cancelled'):
+            shutil.rmtree(dl_dir, ignore_errors=True)
+            return
+
+        try:
+            tg_file = await bot.get_file(
+                tg_file_id,
+                read_timeout=3600,
+                write_timeout=3600,
+                connect_timeout=60,
+            )
+
+            file_path = tg_file.file_path or ''
+            CONTAINER_BASE = '/var/lib/telegram-bot-api/'
+            if file_path.startswith('/'):
+                rel = file_path[len(CONTAINER_BASE):] if file_path.startswith(CONTAINER_BASE) else file_path.lstrip('/')
+                download_url = f"http://localhost:8081/file/bot{bot.token}/{rel}"
+            else:
+                download_url = f"https://api.telegram.org/file/bot{bot.token}/{file_path}"
+
+            await safe_edit_message(status_msg, f"⏳ Status: Downloading `{filename}`...")
+
+            import httpx
+            async with httpx.AsyncClient(timeout=3600) as client:
+                async with client.stream('GET', download_url) as resp:
+                    resp.raise_for_status()
+                    with open(local_path, 'wb') as f:
+                        async for chunk in resp.aiter_bytes(1024 * 1024):
+                            f.write(chunk)
+
+        except Exception as e:
+            shutil.rmtree(dl_dir, ignore_errors=True)
+            await safe_edit_message(status_msg, f"❌ Error: Telegram file transfer failed: {str(e)}")
+            return
+
+        if state.get('cancelled'):
+            shutil.rmtree(dl_dir, ignore_errors=True)
+            return
+
+        if do_zip:
+            zip_filename = filename + '.zip' if not filename.endswith('.zip') else filename
+            zipped = await zip_path(local_path, zip_filename, status_msg)
+            upload_name = zip_filename
+            state['filename'] = upload_name
+            state['action_text'] = 'Uploading to Drive'
+            cmd = ['rclone', 'copy', zipped, 'drive:tgbot/', '--stats', '1s']
+            retcode = await run_and_parse_rclone(cmd, task_id)
+            shutil.rmtree(dl_dir, ignore_errors=True)
+            if state.get('cancelled'): return
+            if retcode == 0:
+                await generate_link_and_finish(status_msg, upload_name)
+            else:
+                await safe_edit_message(status_msg, "❌ Error: Failed to upload zipped file to Drive.")
+        else:
+            state['action_text'] = 'Uploading to Drive'
+            cmd = ['rclone', 'copy', local_path, 'drive:tgbot/', '--stats', '1s']
+            retcode = await run_and_parse_rclone(cmd, task_id)
+            shutil.rmtree(dl_dir, ignore_errors=True)
+            if state.get('cancelled'): return
+            if retcode == 0:
+                await generate_link_and_finish(status_msg, filename)
+            else:
+                await safe_edit_message(status_msg, "❌ Error: Failed to upload file to Drive.")
+        return
+
+    url = state['url']
 
     if url.lower().startswith('magnet:'):
         print(f"[DEBUG] Detected magnet link: {url[:80]}")
@@ -1527,6 +1643,13 @@ async def social_media_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
             copy_proc = await asyncio.create_subprocess_exec(
                 'rclone', 'copy', file_path, 'drive:tgbot/',
+                '--drive-chunk-size', '64M',
+                '--tpslimit', '10',
+                '--tpslimit-burst', '10',
+                '--drive-pacer-min-sleep', '100ms',
+                '--drive-acknowledge-abuse',
+                '--low-level-retries', '10',
+                '--retries', '5',
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
