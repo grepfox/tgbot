@@ -1446,12 +1446,52 @@ def _ydl_opts_for(platform: str, download: bool, out_dir: str = '') -> dict:
     return base
 
 def _extract_info_sync(url: str, platform: str):
-    """
-    Run yt-dlp in info-only mode (no download) to get metadata.
-    Returns (info_dict, error_str).  info_dict is None on failure.
-    For X posts where yt-dlp finds no video, info_dict['_no_video'] = True
-    but there may still be images — the handler will attempt download anyway.
-    """
+    if platform == 'X':
+        m = re.search(r'/status/(\d+)', url)
+        if m:
+            tweet_id = m.group(1)
+            try:
+                resp = requests.get(f"https://api.vxtwitter.com/status/{tweet_id}", timeout=15)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    media_extended = data.get('media_extended') or []
+                    qrt_data = data.get('qrt')
+                    if qrt_data:
+                        qrt_media = qrt_data.get('media_extended') or []
+                        media_extended.extend(qrt_media)
+                    has_video = any(item.get('type') in ('video', 'gif') for item in media_extended)
+                    info = {
+                        'id': tweet_id,
+                        'title': f"{data.get('user_name', '')} - {data.get('text', '')}",
+                        'description': data.get('text', ''),
+                        'uploader': data.get('user_name', ''),
+                        'uploader_id': data.get('user_screen_name', ''),
+                        'formats': [],
+                        'thumbnails': [],
+                        '_no_video': not has_video,
+                        '_vxtwitter': True,
+                        '_vxtwitter_data': data,
+                        '_qrt': qrt_data
+                    }
+                    if has_video:
+                        for item in media_extended:
+                            if item.get('type') in ('video', 'gif') and item.get('url'):
+                                info['formats'].append({
+                                    'vcodec': 'h264',
+                                    'acodec': 'aac',
+                                    'ext': 'mp4',
+                                    'url': item.get('url'),
+                                    'width': item.get('size', {}).get('width', 0),
+                                    'height': item.get('size', {}).get('height', 0),
+                                })
+                    for item in media_extended:
+                        url_str = item.get('url') or item.get('thumbnail_url')
+                        if url_str:
+                            info['thumbnails'].append({'url': url_str})
+                    return info, None
+            except Exception as e:
+                print(f"[vxtwitter] API error, falling back to yt-dlp: {e}")
+
     opts = _ydl_opts_for(platform, download=False)
     if platform == 'X':
         opts['ignore_no_formats_error'] = True
@@ -1459,7 +1499,6 @@ def _extract_info_sync(url: str, platform: str):
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
             if platform == 'X':
-
                 formats = info.get('formats') or []
                 has_video = any(
                     f.get('vcodec', 'none') not in ('none', None)
@@ -1472,18 +1511,51 @@ def _extract_info_sync(url: str, platform: str):
         return None, str(e)
 
 def _download_best_media_sync(url: str, out_dir: str, platform: str,
-                               permissive: bool = False,
-                               progress_hook=None):
-    """
-    Download best video (<=1080p) or image from URL into out_dir.
-    Returns (file_path, info_dict, error_str).
-    file_path is None on failure.
-    Picks video files first; among multiple files picks the largest.
-    If permissive=True, uses format='best' (no codec restrictions).
-    If progress_hook is set, it is added to yt-dlp's progress_hooks.
-    """
+                              permissive: bool = False,
+                              progress_hook=None):
     VIDEO_EXTS = {'.mp4', '.mkv', '.webm', '.mov', '.avi', '.m4v'}
     IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+
+    if platform == 'X':
+        m = re.search(r'/status/(\d+)', url)
+        if m:
+            tweet_id = m.group(1)
+            try:
+                resp = requests.get(f"https://api.vxtwitter.com/status/{tweet_id}", timeout=15)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    media_extended = data.get('media_extended') or []
+                    qrt_data = data.get('qrt')
+                    if qrt_data:
+                        qrt_media = qrt_data.get('media_extended') or []
+                        media_extended.extend(qrt_media)
+                    video_items = [item for item in media_extended if item.get('type') in ('video', 'gif') and item.get('url')]
+                    if video_items:
+                        v_item = video_items[0]
+                        v_url = v_item['url']
+                        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+                        r = requests.get(v_url, stream=True, timeout=30, headers=headers)
+                        if r.status_code == 200:
+                            ext = '.mp4'
+                            path = os.path.join(out_dir, f"{tweet_id}{ext}")
+                            with open(path, 'wb') as f:
+                                for chunk in r.iter_content(chunk_size=1024*1024):
+                                    if chunk:
+                                        f.write(chunk)
+                            info = {
+                                'id': tweet_id,
+                                'title': f"{data.get('user_name', '')} - {data.get('text', '')}",
+                                'description': data.get('text', ''),
+                                'uploader': data.get('user_name', ''),
+                                'uploader_id': data.get('user_screen_name', ''),
+                                'width': v_item.get('size', {}).get('width', 0),
+                                'height': v_item.get('size', {}).get('height', 0),
+                                'duration': 0,
+                                '_qrt': qrt_data
+                            }
+                            return path, info, None
+            except Exception as e:
+                print(f"[vxtwitter] Video download error: {e}, falling back to yt-dlp")
 
     opts = _ydl_opts_for(platform, download=True, out_dir=out_dir)
     if permissive:
@@ -1547,36 +1619,42 @@ def _download_x_images_sync(info: dict, out_dir: str):
     return paths
 
 def _build_caption(info: dict, platform: str, max_len: int = 900) -> str:
-    """
-    Build a plain-label caption (no emojis) from yt-dlp info.
-    Format:
-      app: <Platform>
-      user: <uploader>
-
-      <blockquote>title / tweet text</blockquote>
-    """
     title = (info.get('title') or '').strip()
     description = (info.get('description') or '').strip()
     uploader = (info.get('uploader') or info.get('channel') or '').strip()
 
     if platform == 'X':
         tweet_text = description or title
-
         tweet_text = html.unescape(tweet_text)
-
         tweet_text = re.sub(r'\s*https?://t\.co/[a-zA-Z0-9]+$', '', tweet_text).strip()
-
         tweet_text = re.sub(r' {2,}', '\n', tweet_text)
 
         if len(tweet_text) > max_len:
             tweet_text = tweet_text[:max_len] + '...'
         lines = ['<b>app: X</b>']
+
+        qrt = info.get('_qrt')
+        if qrt:
+            qrt_text = qrt.get('text', '')
+            qrt_text = html.unescape(qrt_text)
+            qrt_text = re.sub(r'\s*https?://t\.co/[a-zA-Z0-9]+$', '', qrt_text).strip()
+            qrt_text = re.sub(r' {2,}', '\n', qrt_text)
+            if len(qrt_text) > max_len:
+                qrt_text = qrt_text[:max_len] + '...'
+            qrt_user = qrt.get('user_name', '')
+            if qrt_user:
+                lines.append(f'user: <b>{html.escape(qrt_user)} (Quoted)</b>')
+            lines.append('')
+            lines.append(f'<blockquote>{html.escape(qrt_text)}</blockquote>')
+            lines.append('')
+
         if uploader:
             lines.append(f'user: <b>{html.escape(uploader)}</b>')
         lines.append('')
 
         quoted = f'<blockquote>{html.escape(tweet_text)}</blockquote>'
         lines.append(quoted)
+
         return '\n'.join(lines)
     else:
         caption_text = title
