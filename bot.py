@@ -131,7 +131,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(help_text)
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("bot is up")
+    t0 = time.time()
+    try:
+        status_msg = await update.message.reply_text("Pinging...")
+        latency_ms = int((time.time() - t0) * 1000)
+        await status_msg.edit_text(f"bot is up | ping: {latency_ms} ms")
+    except Exception:
+        await update.message.reply_text("bot is up")
 
 async def paste(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = " ".join(context.args)
