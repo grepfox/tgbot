@@ -15,6 +15,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LinkPre
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, CallbackQueryHandler, filters
 import time
 import yt_dlp
+
 CREDENTIALS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'credentials.json')
 
 TOKEN = os.environ.get("TG_TOKEN", "")
@@ -626,7 +627,7 @@ async def process_magnet(task_id):
     await process.wait()
 
     if state.get('cancelled') or process.returncode != 0:
-        import shutil; shutil.rmtree(dl_dir, ignore_errors=True)
+        shutil.rmtree(dl_dir, ignore_errors=True)
         if not state.get('cancelled'):
             await safe_edit_message(status_msg, "❌ Error: aria2c download failed.")
         return
