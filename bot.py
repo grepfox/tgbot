@@ -264,6 +264,47 @@ def extract_gdrive_info(url):
 
     return None, False
 
+def resolve_download_filename(url: str) -> str:
+    def _filename_from_headers(headers):
+        cd = headers.get('content-disposition', '') or headers.get('Content-Disposition', '')
+        if not cd:
+            return None
+
+        star_match = re.search(r"filename\*=(?:UTF-8''|)([^;]+)", cd, re.IGNORECASE)
+        if star_match:
+            return urllib.parse.unquote(star_match.group(1).strip().strip('"'))
+
+        name_match = re.search(r'filename=([^;]+)', cd, re.IGNORECASE)
+        if name_match:
+            return name_match.group(1).strip().strip('"')
+
+        return None
+
+    try:
+        for request_fn in (
+            lambda: requests.head(url, allow_redirects=True, timeout=15),
+            lambda: requests.get(url, stream=True, allow_redirects=True, timeout=15),
+        ):
+            try:
+                response = request_fn()
+                try:
+                    filename = _filename_from_headers(response.headers)
+                    if not filename:
+                        final_url = response.url or url
+                        path_name = os.path.basename(urllib.parse.urlparse(final_url).path.rstrip('/'))
+                        filename = urllib.parse.unquote(path_name)
+                    if filename:
+                        return filename
+                finally:
+                    response.close()
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    fallback = os.path.basename(urllib.parse.urlparse(url).path.rstrip('/'))
+    return urllib.parse.unquote(fallback) or f"download_{int(datetime.datetime.utcnow().timestamp())}"
+
 async def mirror(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args if context.args else []
 
@@ -1135,7 +1176,7 @@ async def process_mirror(task_id, bot):
                 await safe_edit_message(status_msg, "❌ Error: Failed to move file to final location.")
         return
 
-    filename = url.split('/')[-1].split('?')[0] or f"download_{int(datetime.datetime.utcnow().timestamp())}"
+    filename = resolve_download_filename(url)
     if do_zip:
         await _download_then_zip_upload(task_id, url, filename, 'Filename')
     else:
