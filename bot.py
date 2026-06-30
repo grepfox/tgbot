@@ -1672,7 +1672,7 @@ def _download_x_images_sync(info: dict, out_dir: str):
             continue
     return paths
 
-def _build_caption(info: dict, platform: str, max_len: int = 900) -> str:
+def _build_caption(info: dict, platform: str, source_url: str = None, max_len: int = 900) -> str:
     title = (info.get('title') or '').strip()
     description = (info.get('description') or '').strip()
     uploader = (info.get('uploader') or info.get('channel') or '').strip()
@@ -1686,6 +1686,8 @@ def _build_caption(info: dict, platform: str, max_len: int = 900) -> str:
         if len(tweet_text) > max_len:
             tweet_text = tweet_text[:max_len] + '...'
         lines = ['<b>app: X</b>']
+        if source_url:
+            lines.append(f'<b>source:</b> <a href="{source_url}">link</a>')
 
         qrt = info.get('_qrt')
         if qrt:
@@ -1717,6 +1719,8 @@ def _build_caption(info: dict, platform: str, max_len: int = 900) -> str:
         if caption_text and len(caption_text) > max_len:
             caption_text = caption_text[:max_len] + '...'
         lines = [f'<b>app: {platform}</b>']
+        if source_url:
+            lines.append(f'<b>source:</b> <a href="{source_url}">link</a>')
         if uploader:
             lines.append(f'user: <b>{html.escape(uploader)}</b>')
         if caption_text:
@@ -1764,7 +1768,7 @@ async def social_media_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             return
 
-        caption = _build_caption(info, platform)
+        caption = _build_caption(info, platform, url)
 
         no_video = info.get('_no_video', False)
 
@@ -1877,7 +1881,7 @@ async def social_media_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         )
 
         if dl_info:
-            caption = _build_caption(dl_info, platform)
+            caption = _build_caption(dl_info, platform, url)
 
         if not file_path or not os.path.exists(file_path):
             print(f'[social] download failed for {platform}: {dl_err}')
