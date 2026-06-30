@@ -1919,15 +1919,8 @@ async def social_media_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         upload_limit = 2000 * 1024 * 1024 if is_local_api else 50 * 1024 * 1024
 
         if file_size > upload_limit:
-            if is_local_api:
-                await status_msg.edit_text(
-                    f'File too large for Telegram even with Local Server ({file_size // (1024 * 1024)} MB > 2000 MB).\n\n'
-                    + caption,
-                    parse_mode='HTML'
-                )
-                return
-
-            await status_msg.edit_text(f'File is {file_size // (1024 * 1024)} MB (> 50 MB limit).\nUploading to Google Drive...')
+            limit_mb = upload_limit // (1024 * 1024)
+            await status_msg.edit_text(f'File is {file_size // (1024 * 1024)} MB (> {limit_mb} MB limit).\nUploading to Google Drive...')
             filename = os.path.basename(file_path)
 
             copy_proc = await asyncio.create_subprocess_exec(
