@@ -370,7 +370,8 @@ async def mirror(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'user_id': update.effective_user.id,
         'status_msg': status_msg,
         'cancelled': False,
-        'process': None
+        'process': None,
+        'start_time': time.time()
     }
 
     await mirror_queue.put(task_id)
@@ -546,7 +547,7 @@ async def zip_path(src_path, zip_name, status_msg):
     await loop.run_in_executor(None, _zip)
     return zip_path_out
 
-async def generate_link_and_finish(status_msg, filename):
+async def generate_link_and_finish(status_msg, filename, task_id=None):
     await safe_edit_message(status_msg, "Status: Generating public links...")
 
     link_process = await asyncio.create_subprocess_exec(
@@ -556,6 +557,11 @@ async def generate_link_and_finish(status_msg, filename):
     )
     stdout, stderr = await link_process.communicate()
     rclone_url = stdout.decode('utf-8', errors='ignore').strip()
+
+    time_taken_str = ""
+    if task_id and task_id in tasks_state and 'start_time' in tasks_state[task_id]:
+        elapsed = time.time() - tasks_state[task_id]['start_time']
+        time_taken_str = f"\nTime Taken: {fmt_eta(elapsed)}"
 
     if rclone_url and "drive.google.com" in rclone_url:
         view_url = rclone_url
@@ -572,16 +578,16 @@ async def generate_link_and_finish(status_msg, filename):
         ]
         await safe_edit_message(
             status_msg,
-            f"Mirror Complete!\n\nFile: <code>{html.escape(filename)}</code>",
+            f"Mirror Complete!\n\nFile: <code>{html.escape(filename)}</code>{time_taken_str}",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="HTML"
         )
     else:
         if rclone_url:
             keyboard = [[InlineKeyboardButton("Open Link", url=rclone_url)]]
-            await safe_edit_message(status_msg, f"Mirror Complete!\n\nFile: <code>{html.escape(filename)}</code>", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+            await safe_edit_message(status_msg, f"Mirror Complete!\n\nFile: <code>{html.escape(filename)}</code>{time_taken_str}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
         else:
-            await safe_edit_message(status_msg, f"Mirror Complete!\n\nFile: <code>{html.escape(filename)}</code>\n\n<i>Note: Could not generate public link.</i>", parse_mode="HTML")
+            await safe_edit_message(status_msg, f"Mirror Complete!\n\nFile: <code>{html.escape(filename)}</code>{time_taken_str}\n\n<i>Note: Could not generate public link.</i>", parse_mode="HTML")
 
 async def gdrive_copyid_to_temp(file_id, task_id):
     """
@@ -709,7 +715,7 @@ async def process_magnet(task_id):
 
     if state.get('cancelled'): return
     if retcode == 0:
-        await generate_link_and_finish(status_msg, upload_name)
+        await generate_link_and_finish(status_msg, upload_name, task_id)
     else:
         await safe_edit_message(status_msg, "Error: Failed to upload to Drive.")
 
@@ -807,7 +813,7 @@ async def _download_then_zip_upload(task_id, url, filename, label):
 
     if state.get('cancelled'): return
     if retcode == 0:
-        await generate_link_and_finish(status_msg, upload_name)
+        await generate_link_and_finish(status_msg, upload_name, task_id)
     else:
         await safe_edit_message(status_msg, "Error: Failed to upload to Drive.")
 
@@ -850,7 +856,7 @@ async def _copy_folder_then_zip_upload(task_id, file_id):
 
     if state.get('cancelled'): return
     if retcode == 0:
-        await generate_link_and_finish(status_msg, upload_name)
+        await generate_link_and_finish(status_msg, upload_name, task_id)
     else:
         await safe_edit_message(status_msg, "Error: Failed to upload zipped folder to Drive.")
 
@@ -1060,7 +1066,7 @@ async def process_mirror(task_id, bot):
             shutil.rmtree(dl_dir, ignore_errors=True)
             if state.get('cancelled'): return
             if retcode == 0:
-                await generate_link_and_finish(status_msg, upload_name)
+                await generate_link_and_finish(status_msg, upload_name, task_id)
             else:
                 await safe_edit_message(status_msg, "Error: Failed to upload zipped file to Drive.")
         else:
@@ -1070,7 +1076,7 @@ async def process_mirror(task_id, bot):
             shutil.rmtree(dl_dir, ignore_errors=True)
             if state.get('cancelled'): return
             if retcode == 0:
-                await generate_link_and_finish(status_msg, filename)
+                await generate_link_and_finish(status_msg, filename, task_id)
             else:
                 await safe_edit_message(status_msg, "Error: Failed to upload file to Drive.")
         return
@@ -1099,7 +1105,7 @@ async def process_mirror(task_id, bot):
             retcode = await run_and_parse_rclone(cmd, task_id)
             if state.get('cancelled'): return
             if retcode == 0:
-                await generate_link_and_finish(status_msg, filename)
+                await generate_link_and_finish(status_msg, filename, task_id)
             else:
                 await safe_edit_message(status_msg, "Error: Failed to copy Google Drive folder.")
         return
@@ -1151,7 +1157,7 @@ async def process_mirror(task_id, bot):
             shutil.rmtree(dl_dir, ignore_errors=True)
             if state.get('cancelled'): return
             if retcode == 0:
-                await generate_link_and_finish(status_msg, upload_name)
+                await generate_link_and_finish(status_msg, upload_name, task_id)
             else:
                 await safe_edit_message(status_msg, "Error: Failed to upload to Drive.")
         else:
@@ -1169,7 +1175,7 @@ async def process_mirror(task_id, bot):
             await asyncio.create_subprocess_exec('rclone', 'purge', tmp_remote)
             if state.get('cancelled'): return
             if mv_proc.returncode == 0:
-                await generate_link_and_finish(status_msg, filename)
+                await generate_link_and_finish(status_msg, filename, task_id)
             else:
                 err = mv_out.decode('utf-8', errors='ignore').strip()
                 print(f"[DEBUG] moveto failed: {err}")
@@ -1201,7 +1207,7 @@ async def process_mirror(task_id, bot):
         shutil.rmtree(dl_dir, ignore_errors=True)
         if state.get('cancelled'): return
         if retcode == 0:
-            await generate_link_and_finish(status_msg, filename)
+            await generate_link_and_finish(status_msg, filename, task_id)
         else:
             await safe_edit_message(status_msg, "Error: Failed to upload to Drive.")
 
@@ -1729,6 +1735,7 @@ async def social_media_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if not url:
         return
 
+    t0 = time.time()
     platform = _platform_of(url)
 
     status_msg = await message.reply_text(
@@ -1960,8 +1967,9 @@ async def social_media_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 await status_msg.delete()
+                elapsed = time.time() - t0
                 await message.reply_text(
-                    f"✅ Download Complete (GDrive Mirror)!\n\nFile: `{filename}`\nSize: {file_size // (1024 * 1024)} MB\n\n" + caption,
+                    f"✅ Download Complete (GDrive Mirror)!\n\nFile: `{filename}`\nSize: {file_size // (1024 * 1024)} MB\nTime Taken: {fmt_eta(elapsed)}\n\n" + caption,
                     parse_mode='HTML',
                     reply_markup=reply_markup,
                     reply_to_message_id=message.message_id
