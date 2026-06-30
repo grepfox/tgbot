@@ -83,7 +83,7 @@ async def mirror_worker(application: Application):
                 if status_msg:
                     await safe_edit_message(
                         status_msg, 
-                        f"❌ Error: <code>{html.escape(str(e))}</code>",
+                        f"Error: <code>{html.escape(str(e))}</code>",
                         parse_mode="HTML"
                     )
             finally:
@@ -348,15 +348,15 @@ async def mirror(update: Update, context: ContextTypes.DEFAULT_TYPE):
     slots_free = MAX_WORKERS - active_count
 
     zip_note = "  |  Zip: ON" if do_zip else ""
-    keyboard = [[InlineKeyboardButton("🚫 Cancel", callback_data=f"cancel_{task_id}")]]
+    keyboard = [[InlineKeyboardButton("Cancel", callback_data=f"cancel_{task_id}")]]
     if slots_free > 0:
         status_msg = await update.message.reply_text(
-            f"⏳ Starting mirror...{zip_note}",
+            f"Starting mirror...{zip_note}",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     else:
         status_msg = await update.message.reply_text(
-            f"⏳ Added to queue\nPosition: {queue_pos}  |  Active: {active_count}/{MAX_WORKERS}{zip_note}",
+            f"Added to queue\nPosition: {queue_pos}  |  Active: {active_count}/{MAX_WORKERS}{zip_note}",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
@@ -394,7 +394,7 @@ async def cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
 
         status_msg = tasks_state[task_id]['status_msg']
-        await safe_edit_message(status_msg, "🚫 Task Cancelled by user!")
+        await safe_edit_message(status_msg, "Task Cancelled by user!")
     else:
         await query.answer("Task not found or already finished.")
 
@@ -516,7 +516,7 @@ async def run_and_parse_rclone(cmd_args, task_id):
             lines.append(f"┗ ETA → {fmt_eta(eta_secs)}")
 
             msg_text = "\n".join(lines)
-            keyboard = [[InlineKeyboardButton("🚫 Cancel", callback_data=f"cancel_{task_id}")]]
+            keyboard = [[InlineKeyboardButton("Cancel", callback_data=f"cancel_{task_id}")]]
             await safe_edit_message(status_msg, msg_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
         except Exception:
             pass
@@ -528,7 +528,7 @@ async def run_and_parse_rclone(cmd_args, task_id):
 
 async def zip_path(src_path, zip_name, status_msg):
     """Zip a file or directory into <zip_name>.zip beside it. Returns the zip path."""
-    await safe_edit_message(status_msg, "⏳ Status: Zipping...")
+    await safe_edit_message(status_msg, "Status: Zipping...")
     zip_path_out = src_path + '.zip' if not src_path.endswith('.zip') else src_path
 
     zip_path_out = os.path.join(os.path.dirname(src_path), zip_name)
@@ -547,7 +547,7 @@ async def zip_path(src_path, zip_name, status_msg):
     return zip_path_out
 
 async def generate_link_and_finish(status_msg, filename):
-    await safe_edit_message(status_msg, "⏳ Status: Generating public links...")
+    await safe_edit_message(status_msg, "Status: Generating public links...")
 
     link_process = await asyncio.create_subprocess_exec(
         'rclone', 'link', f'drive:tgbot/{filename}',
@@ -572,16 +572,16 @@ async def generate_link_and_finish(status_msg, filename):
         ]
         await safe_edit_message(
             status_msg,
-            f"✅ Mirror Complete!\n\nFile: <code>{html.escape(filename)}</code>",
+            f"Mirror Complete!\n\nFile: <code>{html.escape(filename)}</code>",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="HTML"
         )
     else:
         if rclone_url:
-            keyboard = [[InlineKeyboardButton("🔗 Open Link", url=rclone_url)]]
-            await safe_edit_message(status_msg, f"✅ Mirror Complete!\n\nFile: <code>{html.escape(filename)}</code>", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+            keyboard = [[InlineKeyboardButton("Open Link", url=rclone_url)]]
+            await safe_edit_message(status_msg, f"Mirror Complete!\n\nFile: <code>{html.escape(filename)}</code>", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
         else:
-            await safe_edit_message(status_msg, f"✅ Mirror Complete!\n\nFile: <code>{html.escape(filename)}</code>\n\n<i>Note: Could not generate public link.</i>", parse_mode="HTML")
+            await safe_edit_message(status_msg, f"Mirror Complete!\n\nFile: <code>{html.escape(filename)}</code>\n\n<i>Note: Could not generate public link.</i>", parse_mode="HTML")
 
 async def gdrive_copyid_to_temp(file_id, task_id):
     """
@@ -624,8 +624,8 @@ async def process_magnet(task_id):
     state['file_label'] = 'Torrent'
     state['action_text'] = 'Downloading'
 
-    keyboard = [[InlineKeyboardButton("🚫 Cancel", callback_data=f"cancel_{task_id}")]]
-    await safe_edit_message(status_msg, "⏳ Starting aria2c...", reply_markup=InlineKeyboardMarkup(keyboard))
+    keyboard = [[InlineKeyboardButton("Cancel", callback_data=f"cancel_{task_id}")]]
+    await safe_edit_message(status_msg, "Starting aria2c...", reply_markup=InlineKeyboardMarkup(keyboard))
 
     process = await asyncio.create_subprocess_exec(
         'aria2c', url, '--dir', dl_dir, '--seed-time=0',
@@ -676,7 +676,7 @@ async def process_magnet(task_id):
     if state.get('cancelled') or process.returncode != 0:
         shutil.rmtree(dl_dir, ignore_errors=True)
         if not state.get('cancelled'):
-            await safe_edit_message(status_msg, "❌ Error: aria2c download failed.")
+            await safe_edit_message(status_msg, "Error: aria2c download failed.")
         return
 
     fname = filename or task_id
@@ -711,13 +711,13 @@ async def process_magnet(task_id):
     if retcode == 0:
         await generate_link_and_finish(status_msg, upload_name)
     else:
-        await safe_edit_message(status_msg, "❌ Error: Failed to upload to Drive.")
+        await safe_edit_message(status_msg, "Error: Failed to upload to Drive.")
 
 async def run_aria2c_download(url, dl_dir, filename, task_id):
     """Download a URL via aria2c with live progress. Returns returncode."""
     state = tasks_state[task_id]
     status_msg = state['status_msg']
-    keyboard = [[InlineKeyboardButton("🚫 Cancel", callback_data=f"cancel_{task_id}")]]
+    keyboard = [[InlineKeyboardButton("Cancel", callback_data=f"cancel_{task_id}")]]
 
     process = await asyncio.create_subprocess_exec(
         'aria2c', url,
@@ -787,7 +787,7 @@ async def _download_then_zip_upload(task_id, url, filename, label):
         return
     if retcode != 0:
         shutil.rmtree(dl_dir, ignore_errors=True)
-        await safe_edit_message(status_msg, "❌ Error: Download failed.")
+        await safe_edit_message(status_msg, "Error: Download failed.")
         return
 
     local_path = os.path.join(dl_dir, filename)
@@ -809,7 +809,7 @@ async def _download_then_zip_upload(task_id, url, filename, label):
     if retcode == 0:
         await generate_link_and_finish(status_msg, upload_name)
     else:
-        await safe_edit_message(status_msg, "❌ Error: Failed to upload to Drive.")
+        await safe_edit_message(status_msg, "Error: Failed to upload to Drive.")
 
 async def _copy_folder_then_zip_upload(task_id, file_id):
     """Copy a GDrive folder locally, optionally zip it, then re-upload."""
@@ -835,7 +835,7 @@ async def _copy_folder_then_zip_upload(task_id, file_id):
         return
     if retcode != 0:
         shutil.rmtree(dl_dir, ignore_errors=True)
-        await safe_edit_message(status_msg, "❌ Error: Failed to download Google Drive folder.")
+        await safe_edit_message(status_msg, "Error: Failed to download Google Drive folder.")
         return
 
     zip_filename = folder_name + '.zip'
@@ -852,7 +852,7 @@ async def _copy_folder_then_zip_upload(task_id, file_id):
     if retcode == 0:
         await generate_link_and_finish(status_msg, upload_name)
     else:
-        await safe_edit_message(status_msg, "❌ Error: Failed to upload zipped folder to Drive.")
+        await safe_edit_message(status_msg, "Error: Failed to upload zipped folder to Drive.")
 
 async def process_mirror(task_id, bot):
     state = tasks_state[task_id]
@@ -865,7 +865,7 @@ async def process_mirror(task_id, bot):
         state['action_text'] = 'Downloading'
         state['file_label'] = 'Filename'
 
-        await safe_edit_message(status_msg, f"⏳ Status: Fetching file details from Telegram...")
+        await safe_edit_message(status_msg, f"Status: Fetching file details from Telegram...")
 
         dl_dir = os.path.join('downloads', task_id)
         os.makedirs(dl_dir, exist_ok=True)
@@ -884,7 +884,7 @@ async def process_mirror(task_id, bot):
             
             await safe_edit_message(
                 status_msg, 
-                "⏳ Status: Fetching file details from Telegram (large files may take a minute to prepare)..."
+                "Status: Fetching file details from Telegram (large files may take a minute to prepare)..."
             )
 
             tg_file = await bot.get_file(
@@ -923,7 +923,7 @@ async def process_mirror(task_id, bot):
                 total_bytes = state.get('file_size', 0)
                 dl_start = time.time()
                 last_progress_update = time.time()
-                keyboard = [[InlineKeyboardButton("🚫 Cancel", callback_data=f"cancel_{task_id}")]]
+                keyboard = [[InlineKeyboardButton("Cancel", callback_data=f"cancel_{task_id}")]]
 
                 while cp_proc.returncode is None:
                     if state.get('cancelled'):
@@ -986,7 +986,7 @@ async def process_mirror(task_id, bot):
                 bytes_done = 0
                 dl_start = time.time()
                 last_progress_update = time.time()
-                keyboard = [[InlineKeyboardButton("🚫 Cancel", callback_data=f"cancel_{task_id}")]]
+                keyboard = [[InlineKeyboardButton("Cancel", callback_data=f"cancel_{task_id}")]]
 
                 async with httpx.AsyncClient(timeout=3600) as client:
                     with open('mirror_debug.log', 'a') as f:
@@ -1040,7 +1040,7 @@ async def process_mirror(task_id, bot):
             shutil.rmtree(dl_dir, ignore_errors=True)
             await safe_edit_message(
                 status_msg, 
-                f"❌ Error: Telegram file transfer failed: <code>{html.escape(str(e))}</code>",
+                f"Error: Telegram file transfer failed: <code>{html.escape(str(e))}</code>",
                 parse_mode="HTML"
             )
             return
@@ -1062,7 +1062,7 @@ async def process_mirror(task_id, bot):
             if retcode == 0:
                 await generate_link_and_finish(status_msg, upload_name)
             else:
-                await safe_edit_message(status_msg, "❌ Error: Failed to upload zipped file to Drive.")
+                await safe_edit_message(status_msg, "Error: Failed to upload zipped file to Drive.")
         else:
             state['action_text'] = 'Uploading to Drive'
             cmd = ['rclone', 'copy', local_path, 'drive:tgbot/', '--stats', '1s']
@@ -1072,7 +1072,7 @@ async def process_mirror(task_id, bot):
             if retcode == 0:
                 await generate_link_and_finish(status_msg, filename)
             else:
-                await safe_edit_message(status_msg, "❌ Error: Failed to upload file to Drive.")
+                await safe_edit_message(status_msg, "Error: Failed to upload file to Drive.")
         return
 
     url = state['url']
@@ -1101,14 +1101,14 @@ async def process_mirror(task_id, bot):
             if retcode == 0:
                 await generate_link_and_finish(status_msg, filename)
             else:
-                await safe_edit_message(status_msg, "❌ Error: Failed to copy Google Drive folder.")
+                await safe_edit_message(status_msg, "Error: Failed to copy Google Drive folder.")
         return
 
     if file_id and not is_folder:
         state['action_text'] = 'Copying to Drive'
         state['file_label'] = 'Filename'
         state['filename'] = '...'
-        await safe_edit_message(status_msg, "⏳ Copying file to Drive...")
+        await safe_edit_message(status_msg, "Copying file to Drive...")
 
         retcode, filename = await gdrive_copyid_to_temp(file_id, task_id)
         tmp_remote = f'drive:tgbot/tmp_{task_id}/'
@@ -1119,7 +1119,7 @@ async def process_mirror(task_id, bot):
             return
         if retcode != 0 or filename is None:
             await asyncio.create_subprocess_exec('rclone', 'purge', tmp_remote)
-            await safe_edit_message(status_msg, "❌ Error: Failed to copy Google Drive file.")
+            await safe_edit_message(status_msg, "Error: Failed to copy Google Drive file.")
             return
 
         state['filename'] = filename
@@ -1138,7 +1138,7 @@ async def process_mirror(task_id, bot):
                 return
             if dl_ret != 0:
                 shutil.rmtree(dl_dir, ignore_errors=True)
-                await safe_edit_message(status_msg, "❌ Error: Failed to download for zipping.")
+                await safe_edit_message(status_msg, "Error: Failed to download for zipping.")
                 return
             local_path = os.path.join(dl_dir, filename)
             zip_filename = filename + '.zip' if not filename.endswith('.zip') else filename
@@ -1153,7 +1153,7 @@ async def process_mirror(task_id, bot):
             if retcode == 0:
                 await generate_link_and_finish(status_msg, upload_name)
             else:
-                await safe_edit_message(status_msg, "❌ Error: Failed to upload to Drive.")
+                await safe_edit_message(status_msg, "Error: Failed to upload to Drive.")
         else:
 
             src_path = f'drive:tgbot/tmp_{task_id}/{filename}'
@@ -1173,7 +1173,7 @@ async def process_mirror(task_id, bot):
             else:
                 err = mv_out.decode('utf-8', errors='ignore').strip()
                 print(f"[DEBUG] moveto failed: {err}")
-                await safe_edit_message(status_msg, "❌ Error: Failed to move file to final location.")
+                await safe_edit_message(status_msg, "Error: Failed to move file to final location.")
         return
 
     filename = resolve_download_filename(url)
@@ -1192,7 +1192,7 @@ async def process_mirror(task_id, bot):
             return
         if retcode != 0:
             shutil.rmtree(dl_dir, ignore_errors=True)
-            await safe_edit_message(status_msg, "❌ Error: Download failed.")
+            await safe_edit_message(status_msg, "Error: Download failed.")
             return
         state['filename'] = filename
         state['action_text'] = 'Uploading to Drive'
@@ -1203,7 +1203,7 @@ async def process_mirror(task_id, bot):
         if retcode == 0:
             await generate_link_and_finish(status_msg, filename)
         else:
-            await safe_edit_message(status_msg, "❌ Error: Failed to upload to Drive.")
+            await safe_edit_message(status_msg, "Error: Failed to upload to Drive.")
 
 async def tdl(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -1215,7 +1215,7 @@ async def tdl(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args and args[0].lower() == 'clear':
         data[user_id] = []
         _tdl_save(data)
-        await update.message.reply_text("\u2705 To-do list cleared.", parse_mode='HTML')
+        await update.message.reply_text("To-do list cleared.", parse_mode='HTML')
         return
 
     if args and args[0].lower() == 'del':
@@ -1224,13 +1224,13 @@ async def tdl(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         idx = int(args[1]) - 1
         if idx < 0 or idx >= len(items):
-            await update.message.reply_text(f"\u274c No item #{args[1]} in your list.", parse_mode='HTML')
+            await update.message.reply_text(f"No item #{args[1]} in your list.", parse_mode='HTML')
             return
         removed = items.pop(idx)
         data[user_id] = items
         _tdl_save(data)
         await update.message.reply_text(
-            f"\u2705 Removed: <code>{html.escape(removed)}</code>\n\n{_tdl_render(items)}",
+            f"Removed: <code>{html.escape(removed)}</code>\n\n{_tdl_render(items)}",
             parse_mode='HTML'
         )
         return
@@ -1241,7 +1241,7 @@ async def tdl(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data[user_id] = items
         _tdl_save(data)
         await update.message.reply_text(
-            f"\u2705 Added: <code>{html.escape(item)}</code>\n\n{_tdl_render(items)}",
+            f"Added: <code>{html.escape(item)}</code>\n\n{_tdl_render(items)}",
             parse_mode='HTML'
         )
         return
@@ -1309,7 +1309,7 @@ async def nowplaying(update: Update, context: ContextTypes.DEFAULT_TYPE):
     images  = track.get('image', [])
     thumb_url = next((i['#text'] for i in reversed(images) if i.get('#text')), None)
 
-    status = "\U0001f3b5 Now Playing" if is_now else "\U0001f552 Last Played"
+    status = "Now Playing" if is_now else "Last Played"
     lines = [f"<b>{status} — YT Music</b>\n"]
     lines.append(f"<b>{html.escape(title)}</b>")
     if artist:
@@ -1968,7 +1968,7 @@ async def social_media_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 )
             else:
                 await status_msg.edit_text(
-                    f"❌ Could not upload file or generate link.\nFile size: {file_size // (1024 * 1024)} MB is too large for standard Telegram Bot API."
+                    f"Could not upload file or generate link.\nFile size: {file_size // (1024 * 1024)} MB is too large for standard Telegram Bot API."
                 )
             return
 
