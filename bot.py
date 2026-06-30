@@ -150,7 +150,7 @@ async def paste(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
 
-        response = requests.post("https://dpaste.com/api/v2/", data={"content": text})
+        response = requests.post("https://bin.cyberknight777.dev/", files={"file": text})
         if response.status_code in [200, 201]:
             await update.message.reply_text(f"Pasted successfully: {response.text.strip()}")
         else:
