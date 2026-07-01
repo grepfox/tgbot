@@ -1574,6 +1574,67 @@ COBALT_APIS = [
     "https://api.cobalt.liubquanti.click"
 ]
 
+def _extract_instagram_metadata_googlebot(url: str) -> dict:
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)'
+    }
+    info = {}
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        if r.status_code == 200:
+            meta_tags = re.findall(r'<meta\s+[^>]*>', r.text, re.IGNORECASE)
+            
+            description = ""
+            title = ""
+            twitter_title = ""
+            
+            for tag in meta_tags:
+                prop_m = re.search(r'(?:property|name)\s*=\s*["\']([^"\']+)["\']', tag, re.IGNORECASE)
+                content_m = re.search(r'content\s*=\s*["\']([^"\']+)["\']', tag, re.IGNORECASE)
+                
+                if prop_m and content_m:
+                    prop = prop_m.group(1).lower()
+                    content = html.unescape(content_m.group(1).strip())
+                    
+                    if prop in ('og:description', 'description', 'twitter:description'):
+                        if len(content) > len(description):
+                            description = content
+                    elif prop == 'og:title':
+                        if len(content) > len(title):
+                            title = content
+                    elif prop == 'twitter:title':
+                        twitter_title = content
+                        
+            uploader = ""
+            title_match = re.search(r'^(.+?)\s+on\s+Instagram', title)
+            if title_match:
+                uploader = title_match.group(1).strip()
+            elif twitter_title:
+                m = re.search(r'^(.+?)\s*\(', twitter_title)
+                if m:
+                    uploader = m.group(1).strip()
+                            
+            post_text = ""
+            desc_match = re.search(r':\s*\"(.*)\"\s*\.?\s*$', description)
+            if desc_match:
+                post_text = desc_match.group(1).strip()
+            else:
+                title_quote = re.search(r':\s*\"(.*)\"\s*$', title)
+                if title_quote:
+                    post_text = title_quote.group(1).strip()
+                    
+            if not post_text:
+                post_text = description
+                
+            info = {
+                'title': post_text,
+                'description': post_text,
+                'uploader': uploader or 'Instagram User'
+            }
+    except Exception as e:
+        print(f"Error scraping Instagram metadata via Googlebot: {e}")
+    return info
+
 def _download_instagram_media_cobalt_sync(url: str, out_dir: str):
     headers = {
         "Accept": "application/json",
@@ -1844,79 +1905,6 @@ async def social_media_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     out_dir = tempfile.mkdtemp(prefix='tgsocial_')
 
     try:
-        if platform == 'Instagram':
-            await status_msg.edit_text("Downloading from Instagram...")
-            try:
-                downloaded = await loop.run_in_executor(
-                    None, _download_instagram_media_cobalt_sync, url, out_dir
-                )
-            except Exception as e:
-                print(f"[Instagram Cobalt] Error: {e}")
-                downloaded = None
-
-            if downloaded:
-                caption_info = {}
-                try:
-                    caption_info, _ = await asyncio.wait_for(
-                        loop.run_in_executor(None, _extract_info_sync, url, platform),
-                        timeout=5
-                    )
-                except Exception:
-                    pass
-                if not caption_info:
-                    caption_info = {}
-                
-                caption = _build_caption(caption_info, platform, url)
-                
-                await status_msg.edit_text("Uploading to Telegram...")
-                
-                if len(downloaded) == 1:
-                    item = downloaded[0]
-                    with open(item['path'], 'rb') as f:
-                        await status_msg.delete()
-                        if item['type'] == 'photo':
-                            await message.reply_photo(
-                                photo=f,
-                                caption=caption,
-                                parse_mode='HTML',
-                                reply_to_message_id=message.message_id
-                            )
-                        else:
-                            await message.reply_video(
-                                video=f,
-                                caption=caption,
-                                parse_mode='HTML',
-                                reply_to_message_id=message.message_id,
-                                supports_streaming=True
-                            )
-                else:
-                    chunks = [downloaded[i:i + 10] for i in range(0, len(downloaded), 10)]
-                    await status_msg.delete()
-                    
-                    for idx, chunk in enumerate(chunks):
-                        media_group = []
-                        files_to_close = []
-                        for item_idx, item in enumerate(chunk):
-                            f = open(item['path'], 'rb')
-                            files_to_close.append(f)
-                            
-                            item_caption = caption if (idx == 0 and item_idx == 0) else None
-                            
-                            if item['type'] == 'photo':
-                                media_group.append(InputMediaPhoto(media=f, caption=item_caption, parse_mode='HTML'))
-                            else:
-                                media_group.append(InputMediaVideo(media=f, caption=item_caption, parse_mode='HTML', supports_streaming=True))
-                        
-                        try:
-                            await message.reply_media_group(
-                                media=media_group,
-                                reply_to_message_id=message.message_id
-                            )
-                        finally:
-                            for f in files_to_close:
-                                f.close()
-                return
-
         try:
             info, err = await asyncio.wait_for(
                 loop.run_in_executor(None, _extract_info_sync, url, platform),
@@ -1926,6 +1914,64 @@ async def social_media_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             info, err = None, 'Request timed out'
 
         if info is None:
+            if platform == 'Instagram':
+                try:
+                    downloaded = await loop.run_in_executor(
+                        None, _download_instagram_media_cobalt_sync, url, out_dir
+                    )
+                except Exception as e:
+                    print(f"[Instagram Cobalt Fallback] Error: {e}")
+                    downloaded = None
+
+                if downloaded:
+                    caption_info = await loop.run_in_executor(
+                        None, _extract_instagram_metadata_googlebot, url
+                    )
+                    caption = _build_caption(caption_info, platform, url)
+                    try:
+                        await status_msg.edit_text("Uploading to Telegram...")
+                    except Exception:
+                        pass
+                    if len(downloaded) == 1:
+                        item = downloaded[0]
+                        with open(item['path'], 'rb') as f:
+                            await status_msg.delete()
+                            if item['type'] == 'photo':
+                                await message.reply_photo(
+                                    photo=f,
+                                    caption=caption,
+                                    parse_mode='HTML',
+                                    reply_to_message_id=message.message_id
+                                )
+                            else:
+                                await message.reply_video(
+                                    video=f,
+                                    caption=caption,
+                                    parse_mode='HTML',
+                                    reply_to_message_id=message.message_id,
+                                    supports_streaming=True
+                                )
+                    else:
+                        chunks = [downloaded[i:i + 10] for i in range(0, len(downloaded), 10)]
+                        await status_msg.delete()
+                        for idx, chunk in enumerate(chunks):
+                            media_group = []
+                            files_to_close = []
+                            for item_idx, item in enumerate(chunk):
+                                f = open(item['path'], 'rb')
+                                files_to_close.append(f)
+                                item_caption = caption if (idx == 0 and item_idx == 0) else None
+                                if item['type'] == 'photo':
+                                    media_group.append(InputMediaPhoto(media=f, caption=item_caption, parse_mode='HTML'))
+                                else:
+                                    media_group.append(InputMediaVideo(media=f, caption=item_caption, parse_mode='HTML', supports_streaming=True))
+                            try:
+                                await message.reply_media_group(media=media_group, reply_to_message_id=message.message_id)
+                            finally:
+                                for f in files_to_close:
+                                    f.close()
+                    return
+
             print(f'[social] extract_info failed for {platform}: {err}')
             await status_msg.edit_text(
                 f'Could not fetch content from {platform}.\n'
@@ -2046,9 +2092,86 @@ async def social_media_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         )
 
         if dl_info:
+            if platform == 'Instagram':
+                if not dl_info.get('description') or not dl_info.get('uploader'):
+                    scraped = await loop.run_in_executor(
+                        None, _extract_instagram_metadata_googlebot, url
+                    )
+                    for k, v in scraped.items():
+                        if v and not dl_info.get(k):
+                            dl_info[k] = v
             caption = _build_caption(dl_info, platform, url)
 
         if not file_path or not os.path.exists(file_path):
+            if platform == 'Instagram':
+                try:
+                    await status_msg.edit_text("yt-dlp download failed. Trying Cobalt...")
+                except Exception:
+                    pass
+                try:
+                    downloaded = await loop.run_in_executor(
+                        None, _download_instagram_media_cobalt_sync, url, out_dir
+                    )
+                except Exception as e:
+                    print(f"[Instagram Cobalt Fallback] Error: {e}")
+                    downloaded = None
+
+                if downloaded:
+                    caption_info = info if info else {}
+                    if not caption_info.get('description') or not caption_info.get('uploader'):
+                        scraped = await loop.run_in_executor(
+                            None, _extract_instagram_metadata_googlebot, url
+                        )
+                        caption_info = dict(caption_info)
+                        for k, v in scraped.items():
+                            if v and not caption_info.get(k):
+                                caption_info[k] = v
+                    caption = _build_caption(caption_info, platform, url)
+
+                    try:
+                        await status_msg.edit_text("Uploading to Telegram...")
+                    except Exception:
+                        pass
+                    if len(downloaded) == 1:
+                        item = downloaded[0]
+                        with open(item['path'], 'rb') as f:
+                            await status_msg.delete()
+                            if item['type'] == 'photo':
+                                await message.reply_photo(
+                                    photo=f,
+                                    caption=caption,
+                                    parse_mode='HTML',
+                                    reply_to_message_id=message.message_id
+                                )
+                            else:
+                                await message.reply_video(
+                                    video=f,
+                                    caption=caption,
+                                    parse_mode='HTML',
+                                    reply_to_message_id=message.message_id,
+                                    supports_streaming=True
+                                )
+                    else:
+                        chunks = [downloaded[i:i + 10] for i in range(0, len(downloaded), 10)]
+                        await status_msg.delete()
+                        for idx, chunk in enumerate(chunks):
+                            media_group = []
+                            files_to_close = []
+                            for item_idx, item in enumerate(chunk):
+                                f = open(item['path'], 'rb')
+                                files_to_close.append(f)
+                                item_caption = caption if (idx == 0 and item_idx == 0) else None
+                                if item['type'] == 'photo':
+                                    media_group.append(InputMediaPhoto(media=f, caption=item_caption, parse_mode='HTML'))
+                                else:
+                                    media_group.append(InputMediaVideo(media=f, caption=item_caption, parse_mode='HTML', supports_streaming=True))
+                            try:
+                                await message.reply_media_group(media=media_group, reply_to_message_id=message.message_id)
+                            finally:
+                                for f in files_to_close:
+                                    f.close()
+                    return
+
             print(f'[social] download failed for {platform}: {dl_err}')
             if platform == 'X':
 
