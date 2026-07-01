@@ -40,6 +40,7 @@ MAX_WORKERS = 4
 mirror_queue = None
 active_count = 0
 tasks_state = {}
+background_tasks = set()
 
 TDL_FILE = 'tdl_data.json'
 
@@ -99,7 +100,9 @@ async def post_init(application: Application):
     global mirror_queue
     mirror_queue = asyncio.Queue()
     for _ in range(MAX_WORKERS):
-        asyncio.create_task(mirror_worker(application))
+        task = asyncio.create_task(mirror_worker(application))
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
 
     commands = [
         BotCommand("status", "Check if bot is up"),
