@@ -142,24 +142,167 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         await update.message.reply_text("bot is up")
 
-async def paste(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = " ".join(context.args)
-    if not text and update.message.reply_to_message:
-        text = update.message.reply_to_message.text or update.message.reply_to_message.caption
-
-    if not text:
-        await update.message.reply_text("Please provide text or reply to a message containing text to paste.")
-        return
+async def download_telegram_file(bot, file_id, filename) -> str:
+    temp_dir = tempfile.mkdtemp()
+    local_path = os.path.join(temp_dir, filename)
 
     try:
-
-        response = requests.post("https://bin.cyberknight777.dev/", files={"file": text})
-        if response.status_code in [200, 201]:
-            await update.message.reply_text(f"Pasted successfully: {response.text.strip()}")
-        else:
-            await update.message.reply_text(f"Failed to paste. Status code: {response.status_code}")
+        import httpx
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(f"https://api.telegram.org/bot{bot.token}/getFile?file_id={file_id}")
+            if resp.status_code == 200:
+                res_json = resp.json()
+                if res_json.get("ok"):
+                    pub_file_path = res_json["result"].get("file_path")
+                    if pub_file_path:
+                        download_url = f"https://api.telegram.org/file/bot{bot.token}/{pub_file_path}"
+                        async with client.stream('GET', download_url, timeout=300) as dl_resp:
+                            dl_resp.raise_for_status()
+                            with open(local_path, 'wb') as f_out:
+                                async for chunk in dl_resp.aiter_bytes(1024 * 1024):
+                                    f_out.write(chunk)
+                        return local_path
     except Exception as e:
-        await update.message.reply_text(f"Error: {e}")
+        print(f"[download_telegram_file] Public API download failed, falling back to local: {e}")
+
+    tg_file = await bot.get_file(file_id)
+    file_path = tg_file.file_path or ''
+
+    is_local_api = "localhost:8081" in bot.base_url
+    is_local = False
+    container_file_path = ""
+
+    if is_local_api:
+        is_local = True
+        if '/var/lib/telegram-bot-api/' in file_path:
+            idx = file_path.find('/var/lib/telegram-bot-api/')
+            container_file_path = file_path[idx:]
+        elif file_path.startswith('/'):
+            container_file_path = file_path
+        else:
+            token_str = f"bot{bot.token}/"
+            if token_str in file_path:
+                idx = file_path.find(token_str)
+                rel_path = file_path[idx + len(token_str):]
+            else:
+                rel_path = file_path
+            container_file_path = f"/var/lib/telegram-bot-api/{bot.token}/{rel_path}"
+
+    if is_local:
+        host_path = container_file_path.replace("/var/lib/telegram-bot-api", "/home/gnsh/tgbot/telegram-bot-api-data")
+        if os.path.exists(host_path):
+            shutil.copyfile(host_path, local_path)
+        elif os.path.exists(container_file_path):
+            shutil.copyfile(container_file_path, local_path)
+        else:
+            cp_proc = await asyncio.create_subprocess_exec(
+                'docker', 'cp', f"telegram-bot-api:{container_file_path}", local_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await cp_proc.communicate()
+            if cp_proc.returncode != 0:
+                err_msg = stderr.decode('utf-8', errors='ignore').strip()
+                raise Exception(
+                    f"docker cp failed: {err_msg}.\n\n"
+                    "💡 To fix this, either:\n"
+                    "1. Add your user to the docker group: 'sudo usermod -aG docker $USER' (then restart your session).\n"
+                    "2. Update 'setup_local_bot_api.sh' to mount a local directory: change '-v telegram-bot-api-data:/var/lib/telegram-bot-api' to '-v /home/gnsh/tgbot/telegram-bot-api-data:/var/lib/telegram-bot-api'."
+                )
+    else:
+        download_url = file_path if file_path.startswith(('http://', 'https://')) else f"https://api.telegram.org/file/bot{bot.token}/{file_path}"
+        import httpx
+        async with httpx.AsyncClient(timeout=300) as client:
+            async with client.stream('GET', download_url) as resp:
+                resp.raise_for_status()
+                with open(local_path, 'wb') as f_out:
+                    async for chunk in resp.aiter_bytes(1024 * 1024):
+                        f_out.write(chunk)
+                        
+    return local_path
+
+async def upload_to_pastebin(filename: str, file_data: bytes | str) -> str:
+    """
+    Uploads file content to pastebin (bin.cyberknight777.dev).
+    Returns the URL string of the paste on success.
+    """
+    import httpx
+    async with httpx.AsyncClient(timeout=300) as client:
+        response = await client.post("https://bin.cyberknight777.dev/", files={"file": (filename, file_data, "text/plain")})
+    if response.status_code not in [200, 201]:
+        raise Exception(f"Failed to paste. Status code: {response.status_code}")
+    return response.text.strip()
+
+async def paste(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+
+    file_obj = None
+    filename = "paste.txt"
+
+    if update.message.document:
+        file_obj = update.message.document
+        filename = update.message.document.file_name
+    elif update.message.video:
+        file_obj = update.message.video
+        filename = update.message.video.file_name or f"video_{update.message.video.file_id[:6]}.mp4"
+    elif update.message.audio:
+        file_obj = update.message.audio
+        filename = update.message.audio.file_name or f"audio_{update.message.audio.file_id[:6]}.mp3"
+    elif update.message.photo:
+        file_obj = update.message.photo[-1]
+        filename = f"photo_{update.message.photo[-1].file_id[:6]}.jpg"
+    
+    elif update.message.reply_to_message:
+        reply = update.message.reply_to_message
+        if reply.document:
+            file_obj = reply.document
+            filename = reply.document.file_name
+        elif reply.video:
+            file_obj = reply.video
+            filename = reply.video.file_name or f"video_{reply.video.file_id[:6]}.mp4"
+        elif reply.audio:
+            file_obj = reply.audio
+            filename = reply.audio.file_name or f"audio_{reply.audio.file_id[:6]}.mp3"
+        elif reply.photo:
+            file_obj = reply.photo[-1]
+            filename = f"photo_{reply.photo[-1].file_id[:6]}.jpg"
+
+    text = " ".join(context.args)
+    if not file_obj and not text and update.message.reply_to_message:
+        text = update.message.reply_to_message.text or update.message.reply_to_message.caption
+
+    if file_obj:
+        status_msg = await update.message.reply_text("Fetching file from Telegram...")
+        try:
+            local_path = await download_telegram_file(context.bot, file_obj.file_id, filename)
+            
+            try:
+                await safe_edit_message(status_msg, "Uploading file to pastebin...", parse_mode=None)
+                with open(local_path, 'rb') as f:
+                    paste_url = await upload_to_pastebin(filename, f.read())
+                await safe_edit_message(status_msg, f"Pasted successfully: {paste_url}", parse_mode=None)
+            finally:
+                try:
+                    os.remove(local_path)
+                    os.rmdir(os.path.dirname(local_path))
+                except Exception:
+                    pass
+        except Exception as e:
+            import traceback
+            print(f"Error in paste handler: {e}\n{traceback.format_exc()}")
+            await safe_edit_message(status_msg, f"Error: {e}", parse_mode=None)
+    else:
+        if not text:
+            await update.message.reply_text("Please provide text, reply to a message containing text/file, or upload a file to paste.")
+            return
+
+        status_msg = await update.message.reply_text("Uploading paste...")
+        try:
+            paste_url = await upload_to_pastebin(filename, text)
+            await safe_edit_message(status_msg, f"Pasted successfully: {paste_url}", parse_mode=None)
+        except Exception as e:
+            await safe_edit_message(status_msg, f"Error: {e}", parse_mode=None)
 
 async def source_tracker(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
@@ -909,25 +1052,55 @@ async def process_mirror(task_id, bot):
 
             is_local = False
             container_file_path = ""
-            if file_path.startswith('/'):
+            is_local_api = "localhost:8081" in bot.base_url
+
+            if is_local_api:
                 is_local = True
-                container_file_path = file_path
-            elif '/var/lib/telegram-bot-api/' in file_path:
-                is_local = True
-                idx = file_path.find('/var/lib/telegram-bot-api/')
-                container_file_path = file_path[idx:]
+                if '/var/lib/telegram-bot-api/' in file_path:
+                    idx = file_path.find('/var/lib/telegram-bot-api/')
+                    container_file_path = file_path[idx:]
+                elif file_path.startswith('/'):
+                    container_file_path = file_path
+                else:
+                    token_str = f"bot{bot.token}/"
+                    if token_str in file_path:
+                        idx = file_path.find(token_str)
+                        rel_path = file_path[idx + len(token_str):]
+                    else:
+                        rel_path = file_path
+                    container_file_path = f"/var/lib/telegram-bot-api/{bot.token}/{rel_path}"
 
             if is_local:
                 # Local Bot API Server. HTTP downloads return 501 Not Implemented in local mode,
                 # so we copy directly from the container to the host using `docker cp`.
                 with open('mirror_debug.log', 'a') as f:
-                    f.write(f"[DEBUG] Local Bot API file detected at {container_file_path}. Using docker cp.\n")
+                    f.write(f"[DEBUG] Local Bot API file detected at {container_file_path}.\n")
 
-                cp_proc = await asyncio.create_subprocess_exec(
-                    'docker', 'cp', f"telegram-bot-api:{container_file_path}", local_path,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
+                host_path = container_file_path.replace("/var/lib/telegram-bot-api", "/home/gnsh/tgbot/telegram-bot-api-data")
+                if os.path.exists(host_path):
+                    shutil.copyfile(host_path, local_path)
+                    class DummyProc:
+                        returncode = 0
+                        async def communicate(self):
+                            return b"", b""
+                        async def wait(self):
+                            pass
+                    cp_proc = DummyProc()
+                elif os.path.exists(container_file_path):
+                    shutil.copyfile(container_file_path, local_path)
+                    class DummyProc:
+                        returncode = 0
+                        async def communicate(self):
+                            return b"", b""
+                        async def wait(self):
+                            pass
+                    cp_proc = DummyProc()
+                else:
+                    cp_proc = await asyncio.create_subprocess_exec(
+                        'docker', 'cp', f"telegram-bot-api:{container_file_path}", local_path,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
 
                 total_bytes = state.get('file_size', 0)
                 dl_start = time.time()
@@ -2317,7 +2490,7 @@ def main():
     builder = Application.builder().token(TOKEN).post_init(post_init)
     if use_local:
         print("[System] Using LOCAL Telegram Bot API server at http://localhost:8081")
-        builder = builder.base_url("http://localhost:8081/bot").local_mode(True)
+        builder = builder.base_url("http://localhost:8081/bot").base_file_url("http://localhost:8081/file/bot").local_mode(True)
     else:
         print("[System] Using public Telegram Bot API server")
 
