@@ -11,7 +11,7 @@ import zipfile
 import tempfile
 import urllib.parse
 from pathlib import Path
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions, InputMediaPhoto, BotCommand
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions, InputMediaPhoto, InputMediaVideo, BotCommand
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, CallbackQueryHandler, filters
 import time
 import yt_dlp
@@ -1567,6 +1567,96 @@ def _extract_info_sync(url: str, platform: str):
     except Exception as e:
         return None, str(e)
 
+COBALT_APIS = [
+    "https://cobaltapi.kittycat.boo",
+    "https://dog.kittycat.boo",
+    "https://cobaltapi.cjs.nz",
+    "https://api.cobalt.liubquanti.click"
+]
+
+def _download_instagram_media_cobalt_sync(url: str, out_dir: str):
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+    }
+    payload = {"url": url}
+    
+    import urllib3
+    urllib3.disable_warnings()
+    
+    for api_url in COBALT_APIS:
+        base_url = api_url if api_url.endswith('/') else api_url + '/'
+        try:
+            print(f"[Instagram Cobalt] Trying to process link with {base_url}...")
+            r = requests.post(base_url, headers=headers, json=payload, timeout=12, verify=False)
+            if r.status_code != 200:
+                print(f"[Instagram Cobalt] API {base_url} returned status {r.status_code}")
+                continue
+            data = r.json()
+            status = data.get('status')
+            if not status:
+                print(f"[Instagram Cobalt] API {base_url} returned JSON with missing status")
+                continue
+                
+            downloaded_files = []
+            
+            if status == 'picker':
+                picker_items = data.get('picker', [])
+                for i, item in enumerate(picker_items):
+                    media_type = item.get('type')  # 'photo' or 'video' or 'image'
+                    media_url = item.get('url')
+                    if not media_url:
+                        continue
+                    ext = '.mp4' if media_type == 'video' else '.jpg'
+                    out_path = os.path.join(out_dir, f'insta_{i}{ext}')
+                    mr = requests.get(media_url, timeout=15, verify=False)
+                    if mr.status_code == 200:
+                        with open(out_path, 'wb') as f:
+                            f.write(mr.content)
+                        norm_type = 'video' if media_type == 'video' else 'photo'
+                        downloaded_files.append({"type": norm_type, "path": out_path})
+                if downloaded_files:
+                    print(f"[Instagram Cobalt] Successfully downloaded {len(downloaded_files)} items from picker via {base_url}")
+                    return downloaded_files
+                    
+            elif status in ('redirect', 'stream', 'tunnel', 'success'):
+                media_url = data.get('url')
+                if media_url:
+                    ext = '.mp4'
+                    norm_type = 'video'
+                    url_lower = media_url.lower()
+                    if any(img_ext in url_lower for img_ext in ['.jpg', '.jpeg', '.png', '.webp']):
+                        ext = '.jpg'
+                        norm_type = 'photo'
+                    out_path = os.path.join(out_dir, f'insta_single{ext}')
+                    mr = requests.get(media_url, timeout=15, verify=False)
+                    if mr.status_code == 200:
+                        with open(out_path, 'wb') as f:
+                            f.write(mr.content)
+                        content_type = mr.headers.get('content-type', '').lower()
+                        if 'image' in content_type:
+                            norm_type = 'photo'
+                            if not out_path.endswith('.jpg'):
+                                new_path = os.path.splitext(out_path)[0] + '.jpg'
+                                os.rename(out_path, new_path)
+                                out_path = new_path
+                        elif 'video' in content_type:
+                            norm_type = 'video'
+                            if not out_path.endswith('.mp4'):
+                                new_path = os.path.splitext(out_path)[0] + '.mp4'
+                                os.rename(out_path, new_path)
+                                out_path = new_path
+                        downloaded_files.append({"type": norm_type, "path": out_path})
+                        print(f"[Instagram Cobalt] Successfully downloaded single item ({norm_type}) via {base_url}")
+                        return downloaded_files
+            elif status == 'error':
+                err_code = data.get('error', {}).get('code', 'unknown')
+                print(f"[Instagram Cobalt] API {base_url} returned error: {err_code}")
+        except Exception as e:
+            print(f"[Instagram Cobalt] Exception querying Cobalt instance {api_url}: {e}")
+            continue
+    return None
+
 def _download_best_media_sync(url: str, out_dir: str, platform: str,
                               permissive: bool = False,
                               progress_hook=None):
@@ -1754,6 +1844,78 @@ async def social_media_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     out_dir = tempfile.mkdtemp(prefix='tgsocial_')
 
     try:
+        if platform == 'Instagram':
+            await status_msg.edit_text("Downloading from Instagram...")
+            try:
+                downloaded = await loop.run_in_executor(
+                    None, _download_instagram_media_cobalt_sync, url, out_dir
+                )
+            except Exception as e:
+                print(f"[Instagram Cobalt] Error: {e}")
+                downloaded = None
+
+            if downloaded:
+                caption_info = {}
+                try:
+                    caption_info, _ = await asyncio.wait_for(
+                        loop.run_in_executor(None, _extract_info_sync, url, platform),
+                        timeout=5
+                    )
+                except Exception:
+                    pass
+                if not caption_info:
+                    caption_info = {}
+                
+                caption = _build_caption(caption_info, platform, url)
+                
+                await status_msg.edit_text("Uploading to Telegram...")
+                
+                if len(downloaded) == 1:
+                    item = downloaded[0]
+                    with open(item['path'], 'rb') as f:
+                        await status_msg.delete()
+                        if item['type'] == 'photo':
+                            await message.reply_photo(
+                                photo=f,
+                                caption=caption,
+                                parse_mode='HTML',
+                                reply_to_message_id=message.message_id
+                            )
+                        else:
+                            await message.reply_video(
+                                video=f,
+                                caption=caption,
+                                parse_mode='HTML',
+                                reply_to_message_id=message.message_id,
+                                supports_streaming=True
+                            )
+                else:
+                    chunks = [downloaded[i:i + 10] for i in range(0, len(downloaded), 10)]
+                    await status_msg.delete()
+                    
+                    for idx, chunk in enumerate(chunks):
+                        media_group = []
+                        files_to_close = []
+                        for item_idx, item in enumerate(chunk):
+                            f = open(item['path'], 'rb')
+                            files_to_close.append(f)
+                            
+                            item_caption = caption if (idx == 0 and item_idx == 0) else None
+                            
+                            if item['type'] == 'photo':
+                                media_group.append(InputMediaPhoto(media=f, caption=item_caption, parse_mode='HTML'))
+                            else:
+                                media_group.append(InputMediaVideo(media=f, caption=item_caption, parse_mode='HTML', supports_streaming=True))
+                        
+                        try:
+                            await message.reply_media_group(
+                                media=media_group,
+                                reply_to_message_id=message.message_id
+                            )
+                        finally:
+                            for f in files_to_close:
+                                f.close()
+                return
 
         try:
             info, err = await asyncio.wait_for(
