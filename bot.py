@@ -1643,6 +1643,7 @@ def _ydl_opts_for(platform: str, download: bool, out_dir: str = '') -> dict:
         'writethumbnail': False,
         'writesubtitles': False,
         'writeautomaticsub': False,
+        'js_runtimes': {'quickjs': {}, 'node': {}},
 
         'socket_timeout': 30,
     }
@@ -1660,8 +1661,15 @@ def _ydl_opts_for(platform: str, download: bool, out_dir: str = '') -> dict:
         base['format'] = (
             'bestvideo[height<=1080]+bestaudio'
             '/best[height<=1080]'
+            '/bv*[height<=1080]+ba'
+            '/b[height<=1080]'
+            '/bestvideo+bestaudio'
             '/best'
+            '/b'
         )
+
+    if platform == 'YouTube':
+        base['extractor_args'] = {'youtube': {'player_client': ['mweb', 'android', 'web', 'tv']}}
 
     if platform == 'X':
         base['ignore_no_formats_error'] = True
@@ -1944,8 +1952,14 @@ def _download_best_media_sync(url: str, out_dir: str, platform: str,
     if progress_hook:
         opts['progress_hooks'] = [progress_hook]
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+        except Exception as first_err:
+            print(f"[yt-dlp] Main format failed ({first_err}), retrying with fallback format...")
+            opts['format'] = 'best/b/bv*+ba/bv*'
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
 
         all_files = [f for f in Path(out_dir).iterdir() if f.is_file()]
         if not all_files:
