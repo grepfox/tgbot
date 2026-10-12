@@ -351,7 +351,8 @@ async fn download_x_media_vxtwitter(
         "description": data.get("text").and_then(|v| v.as_str()).unwrap_or_default(),
         "uploader": data.get("user_name").and_then(|v| v.as_str()).unwrap_or_default(),
         "uploader_id": data.get("user_screen_name").and_then(|v| v.as_str()).unwrap_or_default(),
-        "_qrt": qrt_data
+        "_qrt": qrt_data,
+        "_has_media": !media_extended.is_empty()
     });
 
     let mut video_url: Option<String> = None;
@@ -426,6 +427,154 @@ async fn download_x_media_vxtwitter(
     Some((Vec::new(), info))
 }
 
+async fn download_x_media_fxtwitter(
+    client: &reqwest::Client,
+    tweet_id: &str,
+    out_dir: &Path,
+) -> Option<(Vec<CobaltItem>, Value)> {
+    let api_url = format!("https://api.fxtwitter.com/status/{tweet_id}");
+    let resp = client.get(&api_url).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let data = resp.json::<Value>().await.ok()?;
+    let tweet = data.get("tweet").or_else(|| data.get("status"))?;
+
+    let author = tweet.get("author");
+    let author_name = author
+        .and_then(|a| a.get("name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let screen_name = author
+        .and_then(|a| a.get("screen_name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let text = tweet.get("text").and_then(|v| v.as_str()).unwrap_or_default();
+
+    fn media_all(t: &Value) -> Vec<Value> {
+        t.get("media")
+            .and_then(|m| m.get("all"))
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    let quote = tweet.get("quote").cloned();
+    let mut all_media = media_all(tweet);
+    if let Some(ref q) = quote {
+        all_media.extend(media_all(q));
+    }
+
+    let qrt = quote.map(|q| {
+        serde_json::json!({
+            "text": q.get("text").and_then(|v| v.as_str()).unwrap_or_default(),
+            "user_name": q
+                .get("author")
+                .and_then(|a| a.get("name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default(),
+        })
+    });
+
+    let mut info = serde_json::json!({
+        "id": tweet_id,
+        "title": format!("{author_name} - {text}"),
+        "description": text,
+        "uploader": author_name,
+        "uploader_id": screen_name,
+        "_qrt": qrt,
+        "_has_media": !all_media.is_empty(),
+    });
+
+    let mut video_url: Option<String> = None;
+    let mut photo_urls: Vec<String> = Vec::new();
+
+    for item in &all_media {
+        let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or_default();
+        let item_url = item.get("url").and_then(|v| v.as_str()).unwrap_or_default();
+        if item_url.is_empty() {
+            continue;
+        }
+        if item_type == "video" || item_type == "gif" {
+            if video_url.is_none() {
+                video_url = Some(item_url.to_string());
+                if let Some(w) = item.get("width").and_then(|v| v.as_u64()) {
+                    info["width"] = Value::from(w);
+                }
+                if let Some(h) = item.get("height").and_then(|v| v.as_u64()) {
+                    info["height"] = Value::from(h);
+                }
+            }
+        } else if item_type == "photo" || item_type == "image" {
+            photo_urls.push(item_url.to_string());
+        }
+    }
+
+    if let Some(v_url) = video_url {
+        let out_path = out_dir.join(format!("{tweet_id}.mp4"));
+        if let Ok(dl_resp) = client
+            .get(&v_url)
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            .send()
+            .await
+        {
+            if dl_resp.status().is_success() {
+                if let Ok(bytes) = dl_resp.bytes().await {
+                    if tokio::fs::write(&out_path, &bytes).await.is_ok() {
+                        return Some((
+                            vec![CobaltItem {
+                                is_video: true,
+                                path: out_path,
+                            }],
+                            info,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    if !photo_urls.is_empty() {
+        let mut downloaded = Vec::new();
+        for (i, p_url) in photo_urls.iter().enumerate() {
+            let out_path = out_dir.join(format!("x_img_{i}.jpg"));
+            if let Ok(resp) = client
+                .get(p_url)
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                .send()
+                .await
+            {
+                if resp.status().is_success() {
+                    if let Ok(bytes) = resp.bytes().await {
+                        if tokio::fs::write(&out_path, &bytes).await.is_ok() {
+                            downloaded.push(CobaltItem {
+                                is_video: false,
+                                path: out_path,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        if !downloaded.is_empty() {
+            return Some((downloaded, info));
+        }
+    }
+
+    Some((Vec::new(), info))
+}
+
+async fn download_x_media(
+    client: &reqwest::Client,
+    tweet_id: &str,
+    out_dir: &Path,
+) -> Option<(Vec<CobaltItem>, Value)> {
+    if let Some(result) = download_x_media_vxtwitter(client, tweet_id, out_dir).await {
+        return Some(result);
+    }
+    download_x_media_fxtwitter(client, tweet_id, out_dir).await
+}
+
 pub async fn social_media_handler(
     bot: Bot,
     msg: Message,
@@ -454,16 +603,26 @@ pub async fn social_media_handler(
 
     let mut downloaded_items: Option<Vec<CobaltItem>> = None;
     let mut media_info: Value = serde_json::json!({});
+    let mut download_error: Option<String> = None;
 
     if platform == "X" {
         let tweet_id_re = Regex::new(r"/status/(\d+)").unwrap();
         if let Some(caps) = tweet_id_re.captures(&url) {
             let tweet_id = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
             if let Some((items, info)) =
-                download_x_media_vxtwitter(&state.http_client, tweet_id, &temp_dir).await
+                download_x_media(&state.http_client, tweet_id, &temp_dir).await
             {
+                let has_media = info
+                    .get("_has_media")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 media_info = info;
-                downloaded_items = Some(items);
+                if !items.is_empty() {
+                    downloaded_items = Some(items);
+                } else if !has_media {
+                    // Text-only post: nothing to download, just send the caption.
+                    downloaded_items = Some(Vec::new());
+                }
             }
         }
     }
@@ -494,18 +653,18 @@ pub async fn social_media_handler(
         let mut ytdl_args = vec![
             "--quiet",
             "--no-warnings",
-            "--noplaylist",
+            "--no-playlist",
             "--merge-output-format",
             "mp4",
             "--format",
             "bestvideo[height<=1080]+bestaudio/bv*[height<=1080]+ba/b[height<=1080]/bestvideo+bestaudio/b/best",
-            "--extractor-args",
-            "youtube:player_client=mweb,android,web,tv",
             "-o",
             outtmpl.to_str().unwrap_or(""),
             "--print-json",
-            &url,
         ];
+        if platform == "YouTube" {
+            ytdl_args.extend(["--extractor-args", "youtube:player_client=mweb,android,web,tv"]);
+        }
         let cookie_str = state
             .config
             .cookies_file
@@ -516,6 +675,7 @@ pub async fn social_media_handler(
             ytdl_args.push("--cookies");
             ytdl_args.push(cookie_str);
         }
+        ytdl_args.push(&url);
 
         let output = Command::new(ytdl_cmd)
             .args(&ytdl_args)
@@ -550,7 +710,16 @@ pub async fn social_media_handler(
                     downloaded_items = Some(items);
                 }
             }
-            _ => {
+            Ok(out) => {
+                download_error = Some(
+                    String::from_utf8_lossy(&out.stderr)
+                        .lines()
+                        .rev()
+                        .find(|line| !line.trim().is_empty())
+                        .unwrap_or("yt-dlp failed")
+                        .trim()
+                        .to_string(),
+                );
                 if platform == "Instagram" {
                     if let Some(items) =
                         download_instagram_media_cobalt(&state.http_client, &url, &temp_dir).await
@@ -562,6 +731,7 @@ pub async fn social_media_handler(
                     }
                 }
             }
+            Err(error) => download_error = Some(error.to_string()),
         }
     }
 
@@ -570,11 +740,14 @@ pub async fn social_media_handler(
     let items = match downloaded_items {
         Some(it) => it,
         None => {
+            let reason = download_error
+                .as_deref()
+                .unwrap_or("yt-dlp returned no media");
             let _ = bot
                 .edit_message_text(
                     msg.chat.id,
                     status_msg.id,
-                    format!("Could not fetch content from {platform}."),
+                    format!("Could not fetch content from {platform}: {}", reason.chars().take(300).collect::<String>()),
                 )
                 .await;
             let _ = tokio::fs::remove_dir_all(&temp_dir).await;
