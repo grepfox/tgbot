@@ -463,7 +463,9 @@ pub async fn social_media_handler(
                 download_x_media_vxtwitter(&state.http_client, tweet_id, &temp_dir).await
             {
                 media_info = info;
-                downloaded_items = Some(items);
+                if !items.is_empty() {
+                    downloaded_items = Some(items);
+                }
             }
         }
     }
