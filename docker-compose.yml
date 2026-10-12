@@ -1,0 +1,15 @@
+services:
+  bot:
+    build: .
+    container_name: tgbot
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - TG_TOKEN=${TG_TOKEN:-}
+      - OWNER_USERNAME=${OWNER_USERNAME:-grepfox}
+      - LASTFM_API_KEY=${LASTFM_API_KEY:-}
+      - LASTFM_USERNAME=${LASTFM_USERNAME:-}
+    volumes:
+      - ./:/app
+      - /app/target
+      - /var/run/docker.sock:/var/run/docker.sock
