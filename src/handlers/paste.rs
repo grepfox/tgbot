@@ -3,7 +3,7 @@ use crate::utils::safe_edit_message;
 use std::path::{Path, PathBuf};
 use teloxide::net::Download;
 use teloxide::prelude::*;
-use teloxide::types::{FileId, Message};
+use teloxide::types::{FileId, LinkPreviewOptions, Message, MessageId};
 use tokio::fs::File;
 use tokio::process::Command;
 
@@ -20,7 +20,7 @@ pub async fn upload_to_pastebin(
     let form = reqwest::multipart::Form::new().part("file", part);
 
     let resp = client
-        .post("https://bin.cyberknight777.dev/")
+        .post("https://paste.grepfox.online/")
         .multipart(form)
         .send()
         .await
@@ -33,6 +33,25 @@ pub async fn upload_to_pastebin(
 
     let text = resp.text().await.map_err(|e| e.to_string())?;
     Ok(text.trim().to_string())
+}
+
+async fn edit_paste_success(bot: &Bot, chat_id: ChatId, message_id: MessageId, url: &str) {
+    let raw_url = format!("{}/raw", url.trim_end_matches('/'));
+    let text = format!("Pasted successfully: {url}\nRaw: {raw_url}");
+    let link_opts = LinkPreviewOptions {
+        is_disabled: true,
+        url: None,
+        prefer_small_media: false,
+        prefer_large_media: false,
+        show_above_text: false,
+    };
+    if let Err(e) = bot
+        .edit_message_text(chat_id, message_id, text)
+        .link_preview_options(link_opts)
+        .await
+    {
+        eprintln!("Edit message error: {e}");
+    }
 }
 
 pub async fn download_telegram_file(
@@ -195,15 +214,7 @@ pub async fn paste_cmd(
                     Ok(bytes) => {
                         match upload_to_pastebin(&state.http_client, &fname, bytes).await {
                             Ok(url) => {
-                                safe_edit_message(
-                                    bot,
-                                    msg.chat.id,
-                                    status_msg.id,
-                                    &format!("Pasted successfully: {url}"),
-                                    None,
-                                    None,
-                                )
-                                .await;
+                                edit_paste_success(bot, msg.chat.id, status_msg.id, &url).await;
                             }
                             Err(e) => {
                                 safe_edit_message(
@@ -253,15 +264,7 @@ pub async fn paste_cmd(
             .await?;
         match upload_to_pastebin(&state.http_client, "paste.txt", text_content.into_bytes()).await {
             Ok(url) => {
-                safe_edit_message(
-                    bot,
-                    msg.chat.id,
-                    status_msg.id,
-                    &format!("Pasted successfully: {url}"),
-                    None,
-                    None,
-                )
-                .await;
+                edit_paste_success(bot, msg.chat.id, status_msg.id, &url).await;
             }
             Err(e) => {
                 safe_edit_message(
