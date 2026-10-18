@@ -37,7 +37,7 @@ pub async fn upload_to_pastebin(
 
 async fn edit_paste_success(bot: &Bot, chat_id: ChatId, message_id: MessageId, url: &str) {
     let raw_url = format!("{}/raw", url.trim_end_matches('/'));
-    let text = format!("Pasted successfully: {url}\nRaw: {raw_url}");
+    let text = format!("Pasted successfully: {url}\nView Raw: {raw_url}");
     let link_opts = LinkPreviewOptions {
         is_disabled: true,
         url: None,
