@@ -12,12 +12,11 @@ use teloxide::types::{
 use tokio::process::Command;
 use url::Url;
 
-const COBALT_APIS: &[&str] = &[
-    "https://cobaltapi.kittycat.boo",
-    "https://dog.kittycat.boo",
-    "https://cobaltapi.cjs.nz",
-    "https://api.cobalt.liubquanti.click",
-];
+// Public instances without JWT/Turnstile auth.
+const COBALT_APIS: &[&str] = &["https://cobaltapi.cjs.nz"];
+
+// Embed-fixer hosts that redirect straight to the media file for bot user agents.
+const INSTAGRAM_EMBED_HOSTS: &[&str] = &["kkinstagram.com"];
 
 pub fn detect_social_url(text: &str) -> Option<String> {
     let re = Regex::new(
@@ -215,6 +214,52 @@ struct CobaltItem {
     path: PathBuf,
 }
 
+/// Detects media kind from the file's magic bytes: Some(true) = video, Some(false) = image.
+fn sniff_media(bytes: &[u8]) -> Option<bool> {
+    if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
+        let brand = &bytes[8..12];
+        return Some(!matches!(brand, b"avif" | b"avis" | b"heic" | b"heix" | b"mif1"));
+    }
+    if bytes.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) {
+        return Some(true);
+    }
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF])
+        || bytes.starts_with(b"\x89PNG")
+        || (bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP")
+    {
+        return Some(false);
+    }
+    None
+}
+
+async fn fetch_media(
+    client: &reqwest::Client,
+    media_url: &str,
+    out_dir: &Path,
+    stem: &str,
+    user_agent: Option<&str>,
+) -> Option<CobaltItem> {
+    let mut req = client.get(media_url);
+    if let Some(ua) = user_agent {
+        req = req.header("User-Agent", ua);
+    }
+    let resp = req.send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let bytes = resp.bytes().await.ok()?;
+    let is_video = sniff_media(&bytes)?;
+    let ext = if is_video { "mp4" } else { "jpg" };
+    let path = out_dir.join(format!("{stem}.{ext}"));
+    tokio::fs::write(&path, &bytes).await.ok()?;
+    Some(CobaltItem { is_video, path })
+}
+
+fn is_instagram_video_url(url_str: &str) -> bool {
+    let u = url_str.to_lowercase();
+    u.contains("/reel/") || u.contains("/reels/") || u.contains("/tv/")
+}
+
 async fn download_instagram_media_cobalt(
     client: &reqwest::Client,
     url_str: &str,
@@ -251,72 +296,59 @@ async fn download_instagram_media_cobalt(
         if status == "picker" {
             if let Some(items) = data.get("picker").and_then(|v| v.as_array()) {
                 for (i, item) in items.iter().enumerate() {
-                    let media_type = item.get("type").and_then(|v| v.as_str()).unwrap_or_default();
-                    let media_url = match item.get("url").and_then(|v| v.as_str()) {
-                        Some(u) => u,
-                        None => continue,
-                    };
-                    let is_video = media_type == "video";
-                    let ext = if is_video { "mp4" } else { "jpg" };
-                    let out_path = out_dir.join(format!("insta_{i}.{ext}"));
-
-                    if let Ok(dl_resp) = client.get(media_url).send().await {
-                        if let Ok(bytes) = dl_resp.bytes().await {
-                            if tokio::fs::write(&out_path, &bytes).await.is_ok() {
-                                downloaded.push(CobaltItem {
-                                    is_video,
-                                    path: out_path,
-                                });
-                            }
+                    if let Some(media_url) = item.get("url").and_then(|v| v.as_str()) {
+                        if let Some(it) =
+                            fetch_media(client, media_url, out_dir, &format!("insta_{i}"), None).await
+                        {
+                            downloaded.push(it);
                         }
                     }
                 }
-            }
-            if !downloaded.is_empty() {
-                return Some(downloaded);
             }
         } else if matches!(status, "redirect" | "stream" | "tunnel" | "success") {
             if let Some(media_url) = data.get("url").and_then(|v| v.as_str()) {
-                let mut is_video = true;
-                let mut ext = "mp4";
-                let url_lower = media_url.to_lowercase();
-                if url_lower.contains(".jpg")
-                    || url_lower.contains(".jpeg")
-                    || url_lower.contains(".png")
-                    || url_lower.contains(".webp")
-                {
-                    is_video = false;
-                    ext = "jpg";
-                }
-
-                let out_path = out_dir.join(format!("insta_single.{ext}"));
-                if let Ok(dl_resp) = client.get(media_url).send().await {
-                    let content_type = dl_resp
-                        .headers()
-                        .get("content-type")
-                        .and_then(|v| v.to_str().ok())
-                        .unwrap_or_default()
-                        .to_lowercase();
-
-                    if let Ok(bytes) = dl_resp.bytes().await {
-                        if tokio::fs::write(&out_path, &bytes).await.is_ok() {
-                            if content_type.contains("image") {
-                                is_video = false;
-                            } else if content_type.contains("video") {
-                                is_video = true;
-                            }
-                            downloaded.push(CobaltItem {
-                                is_video,
-                                path: out_path,
-                            });
-                            return Some(downloaded);
-                        }
-                    }
+                if let Some(it) = fetch_media(client, media_url, out_dir, "insta_single", None).await {
+                    downloaded.push(it);
                 }
             }
         }
+
+        // A reel that only yields images got its thumbnail, not the video.
+        if !downloaded.is_empty()
+            && (!is_instagram_video_url(url_str) || downloaded.iter().any(|it| it.is_video))
+        {
+            return Some(downloaded);
+        }
     }
 
+    download_instagram_media_embed(client, url_str, out_dir).await
+}
+
+async fn download_instagram_media_embed(
+    client: &reqwest::Client,
+    url_str: &str,
+    out_dir: &Path,
+) -> Option<Vec<CobaltItem>> {
+    let mut parsed = Url::parse(url_str).ok()?;
+    for host in INSTAGRAM_EMBED_HOSTS {
+        parsed.set_host(Some(host)).ok()?;
+        let item = match fetch_media(
+            client,
+            parsed.as_str(),
+            out_dir,
+            "insta_single",
+            Some("TelegramBot (like TwitterBot)"),
+        )
+        .await
+        {
+            Some(it) => it,
+            None => continue,
+        };
+        if !item.is_video && is_instagram_video_url(url_str) {
+            continue;
+        }
+        return Some(vec![item]);
+    }
     None
 }
 
@@ -569,10 +601,10 @@ async fn download_x_media(
     tweet_id: &str,
     out_dir: &Path,
 ) -> Option<(Vec<CobaltItem>, Value)> {
-    if let Some(result) = download_x_media_vxtwitter(client, tweet_id, out_dir).await {
+    if let Some(result) = download_x_media_fxtwitter(client, tweet_id, out_dir).await {
         return Some(result);
     }
-    download_x_media_fxtwitter(client, tweet_id, out_dir).await
+    download_x_media_vxtwitter(client, tweet_id, out_dir).await
 }
 
 pub async fn social_media_handler(
