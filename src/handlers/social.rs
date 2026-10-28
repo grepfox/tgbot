@@ -4,6 +4,7 @@ use regex::Regex;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+use crate::utils::InTopic;
 use teloxide::prelude::*;
 use teloxide::types::{
     InlineKeyboardButton, InlineKeyboardMarkup, InputFile, InputMedia, InputMediaPhoto,
@@ -626,7 +627,7 @@ pub async fn social_media_handler(
     let platform = platform_of(&url);
 
     let status_msg = bot
-        .send_message(msg.chat.id, format!("Fetching from {platform}..."))
+        .send_message(msg.chat.id, format!("Fetching from {platform}...")).in_topic(&msg)
         .reply_parameters(ReplyParameters::new(msg.id))
         .await?;
 
@@ -796,7 +797,7 @@ pub async fn social_media_handler(
             prefer_large_media: false,
             show_above_text: false,
         };
-        bot.send_message(msg.chat.id, caption)
+        bot.send_message(msg.chat.id, caption).in_topic(&msg)
             .parse_mode(ParseMode::Html)
             .reply_parameters(ReplyParameters::new(msg.id))
             .link_preview_options(link_opts)
@@ -889,7 +890,7 @@ pub async fn social_media_handler(
                 fmt_eta(elapsed)
             );
 
-            bot.send_message(msg.chat.id, resp_text)
+            bot.send_message(msg.chat.id, resp_text).in_topic(&msg)
                 .parse_mode(ParseMode::Html)
                 .reply_markup(keyboard)
                 .reply_parameters(ReplyParameters::new(msg.id))
@@ -910,7 +911,7 @@ pub async fn social_media_handler(
             let duration = media_info.get("duration").and_then(|v| v.as_u64()).map(|v| v as u32);
 
             let mut req = bot
-                .send_video(msg.chat.id, file)
+                .send_video(msg.chat.id, file).in_topic(&msg)
                 .caption(&caption)
                 .parse_mode(ParseMode::Html)
                 .reply_parameters(ReplyParameters::new(msg.id))
@@ -928,7 +929,7 @@ pub async fn social_media_handler(
             let _ = req.await;
         } else {
             let _ = bot
-                .send_photo(msg.chat.id, file)
+                .send_photo(msg.chat.id, file).in_topic(&msg)
                 .caption(&caption)
                 .parse_mode(ParseMode::Html)
                 .reply_parameters(ReplyParameters::new(msg.id))
@@ -955,7 +956,7 @@ pub async fn social_media_handler(
                 }
             }
             let _ = bot
-                .send_media_group(msg.chat.id, media_group)
+                .send_media_group(msg.chat.id, media_group).in_topic(&msg)
                 .reply_parameters(ReplyParameters::new(msg.id))
                 .await;
         }

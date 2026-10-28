@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
+use crate::utils::InTopic;
 use teloxide::prelude::*;
 use teloxide::types::{
     CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, ParseMode,
@@ -138,7 +139,7 @@ pub async fn mirror_cmd(
             bot.send_message(
                 msg.chat.id,
                 "Usage: `/mirror <URL> [-z]`\nOr reply to a file/document/video/photo with `/mirror [-z]`",
-            )
+            ).in_topic(msg)
             .parse_mode(ParseMode::MarkdownV2)
             .await?;
             return Ok(());
@@ -166,7 +167,7 @@ pub async fn mirror_cmd(
     };
 
     let status_msg = bot
-        .send_message(msg.chat.id, initial_text)
+        .send_message(msg.chat.id, initial_text).in_topic(msg)
         .reply_markup(keyboard)
         .await?;
 

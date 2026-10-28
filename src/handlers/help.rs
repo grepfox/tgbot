@@ -1,3 +1,4 @@
+use crate::utils::InTopic;
 use teloxide::prelude::*;
 use teloxide::types::Message;
 
@@ -19,6 +20,6 @@ Commands:
 
 Auto-download: Just send a YouTube, X/Twitter or Instagram link and I'll fetch the posts!";
 
-    bot.send_message(msg.chat.id, help_text).await?;
+    bot.send_message(msg.chat.id, help_text).in_topic(msg).await?;
     Ok(())
 }

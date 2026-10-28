@@ -1,6 +1,7 @@
 use crate::state::AppState;
 use crate::utils::escape_html;
 use serde_json::Value;
+use crate::utils::InTopic;
 use teloxide::prelude::*;
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message, ParseMode};
 use url::Url;
@@ -15,7 +16,7 @@ pub async fn nowplaying_cmd(bot: &Bot, msg: &Message, state: &AppState) -> Respo
         bot.send_message(
             msg.chat.id,
             format!("This command is only for @{}.", state.config.owner_username),
-        )
+        ).in_topic(msg)
         .await?;
         return Ok(());
     }
@@ -26,7 +27,7 @@ pub async fn nowplaying_cmd(bot: &Bot, msg: &Message, state: &AppState) -> Respo
 
 Set <code>LASTFM_API_KEY</code> and <code>LASTFM_USERNAME</code> in credentials.json or environment.
 Get a free API key at https://www.last.fm/api/account/create";
-        bot.send_message(msg.chat.id, help)
+        bot.send_message(msg.chat.id, help).in_topic(msg)
             .parse_mode(ParseMode::Html)
             .await?;
         return Ok(());
@@ -40,7 +41,7 @@ Get a free API key at https://www.last.fm/api/account/create";
     let resp = match state.http_client.get(&url).send().await {
         Ok(r) => r,
         Err(e) => {
-            bot.send_message(msg.chat.id, format!("Failed to reach Last.fm: {e}"))
+            bot.send_message(msg.chat.id, format!("Failed to reach Last.fm: {e}")).in_topic(msg)
                 .await?;
             return Ok(());
         }
@@ -49,7 +50,7 @@ Get a free API key at https://www.last.fm/api/account/create";
     let data = match resp.json::<Value>().await {
         Ok(d) => d,
         Err(e) => {
-            bot.send_message(msg.chat.id, format!("Failed to parse Last.fm response: {e}"))
+            bot.send_message(msg.chat.id, format!("Failed to parse Last.fm response: {e}")).in_topic(msg)
                 .await?;
             return Ok(());
         }
@@ -63,7 +64,7 @@ Get a free API key at https://www.last.fm/api/account/create";
     let track = match tracks.and_then(|t| t.first()) {
         Some(t) => t,
         None => {
-            bot.send_message(msg.chat.id, "No recent tracks found on Last.fm.")
+            bot.send_message(msg.chat.id, "No recent tracks found on Last.fm.").in_topic(msg)
                 .await?;
             return Ok(());
         }
@@ -129,7 +130,7 @@ Get a free API key at https://www.last.fm/api/account/create";
     if let Some(thumb) = &thumb_url {
         if let Ok(photo_url) = Url::parse(thumb) {
             let res = bot
-                .send_photo(msg.chat.id, InputFile::url(photo_url))
+                .send_photo(msg.chat.id, InputFile::url(photo_url)).in_topic(msg)
                 .caption(&caption)
                 .parse_mode(ParseMode::Html)
                 .reply_markup(keyboard.clone())
@@ -140,7 +141,7 @@ Get a free API key at https://www.last.fm/api/account/create";
         }
     }
 
-    bot.send_message(msg.chat.id, caption)
+    bot.send_message(msg.chat.id, caption).in_topic(msg)
         .parse_mode(ParseMode::Html)
         .reply_markup(keyboard)
         .await?;

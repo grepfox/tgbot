@@ -2,6 +2,7 @@ use crate::state::AppState;
 use crate::utils::escape_html;
 use chrono::{Duration, Utc};
 use serde_json::Value;
+use crate::utils::InTopic;
 use teloxide::prelude::*;
 use teloxide::types::{
     CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputFile,
@@ -17,7 +18,7 @@ pub async fn source_tracker_cmd(bot: &Bot, msg: &Message) -> ResponseResult<()> 
     bot.send_message(
         msg.chat.id,
         "Select the organization to track commits for the past week:",
-    )
+    ).in_topic(msg)
     .reply_markup(keyboard)
     .await?;
 
@@ -179,10 +180,13 @@ pub async fn source_tracker_callback(
             .await;
 
         let input_file = InputFile::file(&temp_file_path).file_name(format!("{org}_recent_commits.txt"));
-        let _ = bot
+        let mut req = bot
             .send_document(chat_id, input_file)
-            .caption(format!("Recent commits for {org}"))
-            .await;
+            .caption(format!("Recent commits for {org}"));
+        if let Some(m) = message.regular_message() {
+            req = req.in_topic(m);
+        }
+        let _ = req.await;
 
         let _ = tokio::fs::remove_file(&temp_file_path).await;
     } else {

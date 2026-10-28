@@ -113,3 +113,53 @@ pub fn zip_path(src_path: &Path, zip_name: &str) -> std::io::Result<PathBuf> {
     zip.finish()?;
     Ok(zip_path_out)
 }
+
+/// The forum topic a message was sent in, if any. `None` means the General topic
+/// or a chat without topics.
+pub fn topic_of(msg: &Message) -> Option<teloxide::types::ThreadId> {
+    if msg.is_topic_message {
+        msg.thread_id
+    } else {
+        None
+    }
+}
+
+pub trait TopicPayload {
+    fn set_topic(&mut self, thread: teloxide::types::ThreadId);
+}
+
+macro_rules! impl_topic_payload {
+    ($($p:ty),*) => {$(
+        impl TopicPayload for $p {
+            fn set_topic(&mut self, thread: teloxide::types::ThreadId) {
+                self.message_thread_id = Some(thread);
+            }
+        }
+    )*};
+}
+
+impl_topic_payload!(
+    teloxide::payloads::SendMessage,
+    teloxide::payloads::SendPhoto,
+    teloxide::payloads::SendVideo,
+    teloxide::payloads::SendDocument,
+    teloxide::payloads::SendMediaGroup
+);
+
+/// Send a reply into the same forum topic as `msg`, so it doesn't land in General.
+pub trait InTopic: Sized {
+    fn in_topic(self, msg: &Message) -> Self;
+}
+
+impl<R> InTopic for R
+where
+    R: teloxide::requests::HasPayload,
+    R::Payload: TopicPayload,
+{
+    fn in_topic(mut self, msg: &Message) -> Self {
+        if let Some(thread) = topic_of(msg) {
+            self.payload_mut().set_topic(thread);
+        }
+        self
+    }
+}

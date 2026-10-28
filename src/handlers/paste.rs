@@ -2,6 +2,7 @@ use crate::state::AppState;
 use crate::utils::safe_edit_message;
 use std::path::{Path, PathBuf};
 use teloxide::net::Download;
+use crate::utils::InTopic;
 use teloxide::prelude::*;
 use teloxide::types::{FileId, LinkPreviewOptions, Message, MessageId};
 use tokio::fs::File;
@@ -196,7 +197,7 @@ pub async fn paste_cmd(
 
     if let Some((fid, fname)) = file_info {
         let status_msg = bot
-            .send_message(msg.chat.id, "Fetching file from Telegram...")
+            .send_message(msg.chat.id, "Fetching file from Telegram...").in_topic(msg)
             .await?;
         match download_telegram_file(bot, state, &fid, &fname).await {
             Ok(local_path) => {
@@ -260,7 +261,7 @@ pub async fn paste_cmd(
         }
     } else if !text_content.is_empty() {
         let status_msg = bot
-            .send_message(msg.chat.id, "Uploading paste...")
+            .send_message(msg.chat.id, "Uploading paste...").in_topic(msg)
             .await?;
         match upload_to_pastebin(&state.http_client, "paste.txt", text_content.into_bytes()).await {
             Ok(url) => {
@@ -282,7 +283,7 @@ pub async fn paste_cmd(
         bot.send_message(
             msg.chat.id,
             "Please provide text, reply to a message containing text/file, or upload a file to paste.",
-        )
+        ).in_topic(msg)
         .await?;
     }
 

@@ -1,6 +1,7 @@
 use crate::utils::escape_html;
 use regex::Regex;
 use std::collections::HashMap;
+use crate::utils::InTopic;
 use teloxide::prelude::*;
 use teloxide::types::{Message, ParseMode};
 use tokio::process::Command;
@@ -111,18 +112,18 @@ pub async fn neofetch_cmd(bot: &Bot, msg: &Message) -> ResponseResult<()> {
         Ok(output) => {
             let clean = clean_neofetch_ansi(&output.stdout);
             if clean.trim().is_empty() {
-                bot.send_message(msg.chat.id, "Error: neofetch returned empty output.")
+                bot.send_message(msg.chat.id, "Error: neofetch returned empty output.").in_topic(msg)
                     .await?;
                 return Ok(());
             }
 
             let resp = format!("<pre>{}</pre>", escape_html(&clean));
-            bot.send_message(msg.chat.id, resp)
+            bot.send_message(msg.chat.id, resp).in_topic(msg)
                 .parse_mode(ParseMode::Html)
                 .await?;
         }
         Err(e) => {
-            bot.send_message(msg.chat.id, format!("Error running neofetch: {e}"))
+            bot.send_message(msg.chat.id, format!("Error running neofetch: {e}")).in_topic(msg)
                 .await?;
         }
     }

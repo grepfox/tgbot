@@ -2,6 +2,7 @@ use crate::utils::escape_html;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use crate::utils::InTopic;
 use teloxide::prelude::*;
 use teloxide::types::{Message, ParseMode};
 
@@ -50,7 +51,7 @@ pub async fn tdl_cmd(bot: &Bot, msg: &Message, args: &[String]) -> ResponseResul
         if first_arg.eq_ignore_ascii_case("clear") {
             data.insert(user_id, Vec::new());
             tdl_save(&data);
-            bot.send_message(msg.chat.id, "To-do list cleared.")
+            bot.send_message(msg.chat.id, "To-do list cleared.").in_topic(msg)
                 .parse_mode(ParseMode::Html)
                 .await?;
             return Ok(());
@@ -58,7 +59,7 @@ pub async fn tdl_cmd(bot: &Bot, msg: &Message, args: &[String]) -> ResponseResul
 
         if first_arg.eq_ignore_ascii_case("del") {
             if args.len() < 2 {
-                bot.send_message(msg.chat.id, "Usage: /tdl del <number>")
+                bot.send_message(msg.chat.id, "Usage: /tdl del <number>").in_topic(msg)
                     .parse_mode(ParseMode::Html)
                     .await?;
                 return Ok(());
@@ -74,7 +75,7 @@ pub async fn tdl_cmd(bot: &Bot, msg: &Message, args: &[String]) -> ResponseResul
                         escape_html(&removed),
                         tdl_render(&items)
                     );
-                    bot.send_message(msg.chat.id, resp)
+                    bot.send_message(msg.chat.id, resp).in_topic(msg)
                         .parse_mode(ParseMode::Html)
                         .await?;
                 }
@@ -82,7 +83,7 @@ pub async fn tdl_cmd(bot: &Bot, msg: &Message, args: &[String]) -> ResponseResul
                     bot.send_message(
                         msg.chat.id,
                         format!("No item #{} in your list.", args[1]),
-                    )
+                    ).in_topic(msg)
                     .parse_mode(ParseMode::Html)
                     .await?;
                 }
@@ -99,13 +100,13 @@ pub async fn tdl_cmd(bot: &Bot, msg: &Message, args: &[String]) -> ResponseResul
             escape_html(&item),
             tdl_render(&items)
         );
-        bot.send_message(msg.chat.id, resp)
+        bot.send_message(msg.chat.id, resp).in_topic(msg)
             .parse_mode(ParseMode::Html)
             .await?;
         return Ok(());
     }
 
-    bot.send_message(msg.chat.id, tdl_render(&items))
+    bot.send_message(msg.chat.id, tdl_render(&items)).in_topic(msg)
         .parse_mode(ParseMode::Html)
         .await?;
     Ok(())
